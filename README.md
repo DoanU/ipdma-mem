@@ -1,7 +1,7 @@
 # Memory and Psychiatric Risk in Young People
 This repository contains the full analysis script written in R for the following journal article:  
 
-Doan, U., Hong, D., Mares, L., Butler, M., Askelund, A. D., Gutenbrunner, C., ... & Hitchcock, C. (2025). The predictive power of autobiographical memory in shaping the mental health of young people: An individual participant data meta-analysis. *Psychological Bulletin, 151*(4), 455.
+Doan, U., Hong, D., Mares, L., Butler, M., Askelund, A. D., Gutenbrunner, C., ... & Hitchcock, C. (2025). The predictive power of autobiographical memory in shaping the mental health of young people: An individual participant data meta-analysis. *Psychological Bulletin, 151*(4), 455. https://doi.org/10.1037/bul0000474
 
 **Pre-registration**: Research questions, search strategy, study selection criteria,
 and analysis plan were preregistered on PROSPERO before starting the literature search (CRD42022287786). The pdf version of this pre-registration is included in the `pre-registration` folder.
