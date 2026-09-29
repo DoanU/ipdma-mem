@@ -1,0 +1,2931 @@
+---
+title: "IPD MA - Primary and Sensitivity Analysis"
+author: "Uyen Doan"
+date: "2023-03-23"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Set up, data-cleaning, & prepare dataset
+
+```{r, message=F}
+here::i_am('IPD MA - Primary and Sensitivity Analysis.Rmd')
+```
+
+```{r setup, message=F}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 999, digits = 5)
+library(haven)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(metafor)
+library(nlme)
+library(mitml)
+library(meta)
+library(systemfit)
+library(mice)
+library(VIM)
+library(naniar)
+library(standardize)
+library(mvmeta)
+library(survival)
+library(survminer)
+library(coxme)
+library(gridExtra)
+library(psych)
+```
+
+```{r loading dataset}
+d_other <- read.csv("IPD_additional_all_other_data.csv")
+d_ALSPAC <- read.csv("ALSPAC_additional_data.csv")
+d_Rice <- read.csv("Rice_data.csv")
+d_Hamlat <- read.csv("Hamlat_data.csv")
+```
+
+```{r data cleaning}
+d_other <- replace(d_other,d_other == -10| d_other==999| d_other==990, NA)
+d_other <- d_other %>% filter(!Study == "")
+d_ALSPAC <- replace(d_ALSPAC,d_ALSPAC == -10| d_ALSPAC==999| d_ALSPAC==-9999, NA)
+```
+
+```{r combine other and alspac dataset}
+d <- merge(d_other, d_ALSPAC, by = intersect(names(d_other), names(d_ALSPAC)), all = TRUE)
+```
+
+```{r combine Rice and Hamlat datasets with d}
+d <- merge(d, d_Rice, by = intersect(names(d), names(d_Rice)), all = TRUE)
+
+d <- merge(d, d_Hamlat, by = intersect(names(d), names(d_Hamlat)), all = TRUE)
+
+d <- d %>% filter(!Study == "" | Study == "Barry")
+```
+
+## Imputing relevant variables
+
+```{r}
+d <- d %>% mutate(N_total = ifelse(Study %in% c("Nixon_PTSD","Nixon_ASD"), N_pos + N_neg, N_total),
+                  N_total = ifelse(Study %in% c("Woody", "Warne", "Hiller"), 10, N_total),
+                  N_neg = ifelse(Study %in% c("Woody", "Warne", "Hiller"), 5, N_neg),
+                  N_pos = ifelse(Study %in% c("Woody", "Warne", "Hiller"), 5, N_pos))
+
+# add Gender to Hipwell study, only contains female participants
+d <- d %>% mutate(Gender = ifelse (Study == "Hipwell", 2, Gender))
+```
+
+## Calculating relevant variables
+
+```{r}
+d <- d %>% mutate(
+  baseMem = ifelse(Study == "Gutenbrunner", Baseline_prop_spec_eo, Baseline_spec/ N_total),
+  baseMemNeg = Baseline_spec_neg/N_neg,
+  baseMemNeg = ifelse(Study == "Gutenbrunner", Baseline_prop_spec_neg_eo, baseMemNeg),
+  baseMemPos = Baseline_spec_pos/N_pos,
+  baseMemPos = ifelse(Study == "Gutenbrunner", Baseline_prop_spec_pos_eo, baseMemPos),
+  baseDepSx = ifelse(Study %in% c("Askelund", "Gutenbrunner", "Hamlat", "Hitchcock2", "Hitchcock", "Hiller", "Nixon_ASD", "Nixon_PTSD", "Rice", "Sumner", "Woody"),Baseline_self_dep, NA),
+  baseDepSx = ifelse(Study %in% c("Hipwell", "McCrory", "Warne"), Baseline_obs_dep_con, baseDepSx),
+  depSx6m = ifelse(Study %in% c("Nixon_ASD", "Nixon_PTSD"), Followup_self_dep_2m, NA),
+  depSx6m = ifelse(Study == "Askelund", Followup_self_dep_4m, depSx6m),
+  depSx6m = ifelse(Study == "Hitchcock", Followup_self_dep_5m, depSx6m),
+  depSx6m = ifelse(Study %in% c("Hamlat", "Hiller", "Woody"), Followup_self_dep_6m, depSx6m),
+  depSx12m = ifelse(Study %in% c("Askelund", "Gutenbrunner", "Hamlat", "Woody", "Rice"), Followup_self_dep_12m, NA),
+  depSx12m = ifelse(Study == "Hitchcock2", Followup_self_dep_8m, depSx12m),
+  depSx12m = ifelse(Study %in% c("Hipwell"), Followup_obs_dep_con_12m, depSx12m),
+  depSx18m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_dep_18m, NA),
+  depSx24m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_dep_24m, NA),
+  depSx24m = ifelse(Study == "Gutenbrunner", Followup_self_dep_23m, depSx24m),
+  depSx48m = ifelse(Study %in% c("Hamlat","Warne"), Followup_self_dep_48m, NA),
+  depSx48m = ifelse(Study == "McCrory", Followup_obs_dep_con_27m, depSx48m),
+  baseAnxSx = ifelse(Study %in% c("Gutenbrunner","Hamlat", "Hitchcock2", "Woody"), Baseline_self_anx, NA),
+  baseAnxSx = ifelse(Study == "McCrory", Baseline_obs_anx_con, baseAnxSx),
+  anxSx6m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_anx_6m, NA),
+  anxSx12m = ifelse(Study %in% c("Gutenbrunner", "Hamlat", "Woody"), Followup_self_anx_12m, NA),
+  anxSx12m = ifelse(Study == "Hitchcock2", Followup_self_anx_8m, anxSx12m),
+  anxSx18m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_anx_18m, NA),
+  anxSx24m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_anx_24m, NA),
+  anxSx24m = ifelse(Study == "Gutenbrunner", Followup_self_anx_23m, anxSx24m),
+  anxSx27m = ifelse(Study == "McCrory", Followup_obs_anx_con_27m, NA),
+  basePTSDsx = ifelse(Study %in% c("Hitchcock","Nixon_ASD"), Baseline_int_PTSD_con, NA), 
+  basePTSDsx = ifelse(Study %in% c("Hitchcock2","Nixon_PTSD"),Baseline_self_PTSD, basePTSDsx), 
+  PTSDsx2m = ifelse(Study %in% c("Hitchcock","Nixon_ASD"), Followup_int_PTSD_con_2m, NA), 
+  PTSDsx2m = ifelse(Study == "Nixon_PTSD", Followup_self_PTSD_2m, PTSDsx2m),
+  PTSDsx5m = ifelse(Study == "Hitchcock", Followup_int_PTSD_con_5m, NA),
+  PTSDsx8m = ifelse(Study == "Hitchcock2", Followup_self_PTSD_8m, NA)
+  )
+
+#filter two abnormal data points where proportion of specific memory is >1 and participants without memory data
+d <- d[!((d$baseMem > 1.0 | d$baseMemNeg > 1.0) & !(is.na(d$baseMem) | is.na(d$baseMemNeg))),]
+d <- d%>% filter(!is.na(baseMem))
+```
+
+## z-score transformation
+
+```{r standardisation}
+dz <- d %>% group_by(Study)%>%
+  mutate(across(starts_with(c("Followup_self", "Followup_obs", "Followup_int_PTSD_con")), scale),
+         Baseline_self_dep = scale(Baseline_self_dep),
+         Baseline_obs_dep_con = scale(Baseline_obs_dep_con),
+         Baseline_self_anx = scale(Baseline_self_anx),
+         Baseline_int_PTSD_con = scale(Baseline_int_PTSD_con)) %>%
+  ungroup()
+```
+
+## Harmonise outcomes between studies
+
+```{r}
+dz <- dz %>% 
+  mutate(baseDepSx = ifelse(Study %in% c("Askelund", "Gutenbrunner", "Hamlat", "Hitchcock2", "Hitchcock", "Hiller", "Nixon_ASD", "Nixon_PTSD", "Rice", "Sumner", "Woody"),Baseline_self_dep, NA),
+         baseDepSx = ifelse(Study %in% c("Hipwell", "McCrory", "Warne"), Baseline_obs_dep_con, baseDepSx),
+         depSx6m = ifelse(Study %in% c("Nixon_ASD", "Nixon_PTSD"), Followup_self_dep_2m, NA),
+         depSx6m = ifelse(Study == "Askelund", Followup_self_dep_4m, depSx6m),
+         depSx6m = ifelse(Study == "Hitchcock", Followup_self_dep_5m, depSx6m),
+         depSx6m = ifelse(Study %in% c("Hamlat", "Hiller", "Woody"), Followup_self_dep_6m, depSx6m),
+         depSx12m = ifelse(Study %in% c("Askelund", "Gutenbrunner", "Hamlat", "Woody", "Rice"), Followup_self_dep_12m, NA),
+         depSx12m = ifelse(Study == "Hitchcock2", Followup_self_dep_8m, depSx12m),
+         depSx12m = ifelse(Study %in% c("Hipwell"), Followup_obs_dep_con_12m, depSx12m),
+         depSx18m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_dep_18m, NA),
+         depSx24m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_dep_24m, NA),
+         depSx24m = ifelse(Study == "Gutenbrunner", Followup_self_dep_23m, depSx24m),
+         depSx48m = ifelse(Study %in% c("Hamlat","Warne"), Followup_self_dep_48m, NA),
+         depSx48m = ifelse(Study == "McCrory", Followup_obs_dep_con_27m, depSx48m),
+         depSx72m = ifelse(Study %in% c("Hamlat","Warne"), Followup_self_dep_72m, NA),
+         depSx108m = ifelse(Study == "Hamlat", Followup_self_dep_102m, NA),
+         depSx108m = ifelse(Study == "Warne", Followup_self_dep_108m, depSx108m),
+         baseAnxSx = ifelse(Study %in% c("Gutenbrunner","Hamlat", "Hitchcock2", "Woody"), Baseline_self_anx, NA),
+         baseAnxSx = ifelse(Study == "McCrory", Baseline_obs_anx_con, baseAnxSx),
+         anxSx6m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_anx_6m, NA),
+         anxSx12m = ifelse(Study %in% c("Gutenbrunner", "Hamlat", "Woody"), Followup_self_anx_12m, NA),
+         anxSx12m = ifelse(Study == "Hitchcock2", Followup_self_anx_8m, anxSx12m),
+         anxSx18m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_anx_18m, NA),
+         anxSx24m = ifelse(Study %in% c("Hamlat", "Woody"), Followup_self_anx_24m, NA),
+         anxSx24m = ifelse(Study == "Gutenbrunner", Followup_self_anx_23m, anxSx24m),
+         anxSx27m = ifelse(Study == "McCrory", Followup_obs_anx_con_27m, NA),
+         basePTSDsx = ifelse(Study %in% c("Hitchcock","Nixon_ASD"), Baseline_int_PTSD_con, NA),
+         basePTSDsx = ifelse(Study %in% c("Hitchcock2","Nixon_PTSD"),Baseline_self_PTSD, basePTSDsx),
+         PTSDsx2m = ifelse(Study %in% c("Hitchcock","Nixon_ASD"), Followup_int_PTSD_con_2m, NA),
+         PTSDsx2m = ifelse(Study == "Nixon_PTSD", Followup_self_PTSD_2m, PTSDsx2m),
+         PTSDsx5m = ifelse(Study == "Hitchcock", Followup_int_PTSD_con_5m, NA),
+         PTSDsx8m = ifelse(Study == "Hitchcock2", Followup_self_PTSD_8m, NA),
+         basePsySx = ifelse(Study == "Warne", Baseline_self_psychosis, NA),
+         psySx48m = ifelse(Study == "Warne", Followup_self_psychosis_48m, NA),
+         depSx = ifelse(Study %in% c("Hitchcock", "Nixon_ASD", "Nixon_PTSD"), Followup_self_dep_2m, NA),
+         depSx = ifelse(Study == "Askelund", Followup_self_dep_4m, depSx),
+         depSx = ifelse(Study %in% c("Hamlat", "Hiller", "Woody"), Followup_self_dep_6m, depSx),
+         depSx = ifelse(Study == "Hitchcock2", Followup_self_dep_8m, depSx),
+         depSx = ifelse(Study %in% c("Gutenbrunner", "Rice"), Followup_self_dep_12m, depSx),
+         depSx = ifelse(Study == "Hipwell", Followup_obs_dep_con_12m, depSx),
+         depSx = ifelse(Study == "McCrory", Followup_obs_dep_con_27m, depSx),
+         depSx = ifelse(Study == "Warne", Followup_self_dep_48m, depSx),
+         timeDep = ifelse(Study %in% c("Hitchcock", "Nixon_ASD", "Nixon_PTSD"), 2, NA),
+         timeDep = ifelse(Study == "Askelund", 4, timeDep),
+         timeDep = ifelse(Study %in% c("Hamlat", "Hiller", "Woody"), 6, timeDep),
+         timeDep = ifelse(Study == "Hitchcock2", 8, timeDep),
+         timeDep = ifelse(Study %in% c("Gutenbrunner", "Hipwell", "Rice"), 12, timeDep),
+         timeDep = ifelse(Study == "Warne", 48, timeDep),
+         timeDep = ifelse(Study == "McCrory", 27, timeDep))
+
+dz$Sex <- as.numeric(dz$Gender)
+```
+
+### Check range, mean, SD of variables against possible range of scales and z-scores
+
+```{r summary stats for d, message=F,warning=F}
+d_sum <- d %>% group_by(Study) %>%
+  summarise(
+    maxMem = max(Baseline_spec, na.rm = T),
+    rangeRum = range(Baseline_rum, na.rm = T),
+    nameRum = Rum[1],
+    rangeSelfDepSx = range(Baseline_self_dep, na.rm = T),
+    nameSelfDepSx = Self_dep[1],
+    rangeObsDepSx = range(Baseline_obs_dep_con, na.rm = T),
+    nameObsDepSx = Obs_dep_con[1],
+    rangeSelfAnxSx = range(Baseline_self_anx, na.rm = T),
+    nameSelfAnxSx = Self_anx[1],
+    rangeObsAnxSx = range(Baseline_obs_anx_con, na.rm = T),
+    nameObsAnxSx = Obs_anx_con[1]
+  ) %>%
+  ungroup()
+```
+
+```{r calculate summary statistics for dz}
+dz_sum <- dz %>%
+  group_by(Study) %>%
+  summarise(n=n(), sd_baseDepSx = sd(baseDepSx, na.rm = TRUE),
+            mn_baseDepSx = mean(baseDepSx, na.rm = TRUE),
+            #range_baseDepSx = range(baseDepSx, na.rm = TRUE),
+            sd_baseMem = sd(baseMem, na.rm = TRUE),
+            mn_baseMem = mean(baseMem, na.rm = TRUE),
+            #range_baseMem = range(baseMem, na.rm = TRUE),
+            sd_sxDep6m = sd(depSx6m, na.rm = TRUE),
+            mn_sxDep6m = mean(depSx6m, na.rm = TRUE),
+            #range_sxDep6m = range(depSx6m, na.rm = TRUE),
+            sd_sxDep12m = sd(depSx12m, na.rm = TRUE),
+            mn_sxDep12m = mean(depSx12m, na.rm = TRUE),
+            #range_sxDep12m = range(depSx12m, na.rm = TRUE),
+            sd_sxDep24m = sd(depSx24m, na.rm = TRUE),
+            mn_sxDep24m = mean(depSx24m, na.rm = TRUE),
+            #range_sxDep24m = range(depSx24m, na.rm = TRUE),
+            sd_sxDep48m = sd(depSx48m, na.rm = TRUE),
+            mn_sxDep48m = mean(depSx48m, na.rm = TRUE),
+            #range_sxDep48m = range(depSx48m, na.rm = TRUE),
+            sd_sxDepSx = sd(depSx, na.rm = TRUE),
+            mn_sxDepSx = mean(depSx, na.rm = TRUE),
+            #range_sxDepSx = range(depSx, na.rm = TRUE),
+            sd_baseAnxSx = sd(Baseline_self_anx, na.rm = TRUE),
+            mn_baseAnxSx = mean(Baseline_self_anx, na.rm = TRUE),
+            #range_baseAnxSx = range(Baseline_self_anx, na.rm = TRUE),
+            sd_sxAnx6m = sd(anxSx6m, na.rm = TRUE),
+            mn_sxAnx6m = mean(anxSx6m, na.rm = TRUE),
+            #range_anx_6m = range(anxSx6m, na.rm = TRUE),
+            sd_sxAnx12m = sd(anxSx12m, na.rm = TRUE),
+            mn_sxAnx12m = mean(anxSx12m, na.rm = TRUE),
+            #range_anx_12m = range(anxSx12m, na.rm = TRUE),
+            sd_basePTSDsx = sd(Baseline_int_PTSD_con, na.rm = TRUE),
+            mn_basePTSDsx = mean(Baseline_int_PTSD_con, na.rm = TRUE),
+            #range_basePTSDsx = range(Baseline_int_PTSD_con, na.rm = TRUE),
+            sd_PTSDsx2m = sd(PTSDsx2m, na.rm = TRUE),
+            mn_PTSDsx2m = mean(PTSDsx2m, na.rm = TRUE),
+            #range_PTSDsx2m = range(PTSDsx2m, na.rm = TRUE),
+            sd_PTSDsx5m = sd(PTSDsx5m, na.rm = TRUE),
+            mn_PTSDsx5m = mean(PTSDsx5m, na.rm = TRUE),
+            #range_PTSDsx5m = range(PTSDsx5m, na.rm = TRUE),
+            sd_PTSDsx8m = sd(PTSDsx8m, na.rm = TRUE),
+            mn_PTSDsx8m = mean(PTSDsx8m, na.rm = TRUE)) %>%
+            #range_PTSDsx8m = range(PTSDsx8m, na.rm = TRUE),) %>%
+  ungroup()
+```
+
+```{r compile available data}
+## Create a table to examine available data by study
+
+study_cols <- list()
+for (study_name in unique(d$Study)) {
+  study_data <- dz[dz$Study == study_name, ]
+  study_cols[[study_name]] <- names(study_data)[apply(study_data, 2, function(x) !all(is.na(x)))]
+}
+max_length <- max(lengths(study_cols))
+var <- lapply(study_cols, function(x) {
+  if (length(x) < max_length) {
+    x <- c(x, rep(NA, max_length - length(x)))
+  }
+  return(x[1:max_length])
+})
+var_df <- dplyr::bind_cols(var)
+df_long <- var_df %>% gather(column, value, Askelund:Woody)
+df_grouped <- df_long %>% group_by(value)
+var_by_study <- df_grouped %>% 
+  mutate(column_list = paste(unique(column), collapse = ", "))%>%
+  na.omit()
+var_by_study$column <- NULL
+var_by_study <- distinct(var_by_study)
+```
+
+## Missing data examination
+
+```{r}
+#using depression sx as main outcome of interest to assess missingness in sx severity outcome
+dz <- dz %>% mutate(naDepSx = as.numeric(if_else(is.na(depSx), 0, 1)))
+
+sx.studies <-
+  as.character(
+    c(
+      "Askelund",
+      "Gutenbrunner",
+      "Hamlat",
+      "Hiller",
+      "Hipwell",
+      "Hitchcock",
+      "Hitchcock2",
+      "McCrory",
+      "Nixon_ASD",
+      "Nixon_PTSD",
+      "Rice",
+      "Warne",
+      "Woody"
+    )
+  )
+
+d.missing.sx <- dz%>% filter(Study %in% sx.studies & (!is.na(Sex))) 
+cor.test(d.missing.sx$Age, d.missing.sx$naDepSx)
+cor.test(d.missing.sx$Sex, d.missing.sx$naDepSx)
+cor.test(d.missing.sx$baseDepSx, d.missing.sx$naDepSx)
+cor.test(d.missing.sx$baseMem, d.missing.sx$naDepSx)
+```
+
+# Exploratory graph
+
+## Depression
+
+```{r graph, warning=FALSE}
+# check distribution of standardised score against unstandardised scores
+#standardised dep sx, scatterplot
+p.d <- ggplot() +
+  geom_point(
+    data = dz %>% mutate(timePoint = "06m"),
+    mapping = aes(x = baseMem, y = depSx6m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "12m"),
+    mapping = aes(x = baseMem, y = depSx12m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "18m"),
+    mapping = aes(x = baseMem, y = depSx18m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "24m"),
+    mapping = aes(x = baseMem, y = depSx24m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "48m"),
+    mapping = aes(x = baseMem, y = depSx48m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  facet_wrap( ~ timePoint)
+
+print(p.d)
+
+#unstandardised dep sx
+p.d.og <- ggplot() +
+  geom_point(
+    data = d %>% mutate(timePoint = "06m"),
+    mapping = aes(x = baseMem, y = depSx6m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "12m"),
+    mapping = aes(x = baseMem, y = depSx12m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "18m"),
+    mapping = aes(x = baseMem, y = depSx18m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "24m"),
+    mapping = aes(x = baseMem, y = depSx24m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "48m"),
+    mapping = aes(x = baseMem, y = depSx48m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  facet_wrap( ~ timePoint)
+
+print(p.d.og)
+
+#boxplot of memory and depression sx
+p1 <- ggplot() +
+  geom_boxplot(
+    data = dz %>% mutate(timePoint = "12m"),
+    mapping = aes(x = cut_interval(baseMem, n = 11), y = depSx12m)
+  )  + theme_bw() + xlab("baseMem") + theme(axis.text.x = element_text(
+    angle = 90,
+    hjust = 1,
+    vjust = 0.5
+  ))
+
+print(p1)
+
+#check correlation
+cor.test(dz$baseMem, dz$depSx6m, method = "pearson")
+cor.test(dz$baseMem, dz$depSx12m, method = "pearson")
+```
+
+## Anxiety sx
+
+```{r graph, warning=FALSE}
+p.a <- ggplot() +
+  geom_point(
+    data = dz %>% mutate(timePoint = "06m"),
+    mapping = aes(x = baseMem, y = anxSx6m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "12m"),
+    mapping = aes(x = baseMem, y = anxSx12m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "18m"),
+    mapping = aes(x = baseMem, y = anxSx18m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "24m"),
+    mapping = aes(x = baseMem, y = anxSx24m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  facet_wrap( ~ timePoint)
+
+print(p.a)
+
+p.a.og <- ggplot() +
+  geom_point(
+    data = d %>% mutate(timePoint = "06m"),
+    mapping = aes(x = baseMem, y = anxSx6m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "12m"),
+    mapping = aes(x = baseMem, y = anxSx12m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "18m"),
+    mapping = aes(x = baseMem, y = anxSx18m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "24m"),
+    mapping = aes(x = baseMem, y = anxSx24m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  facet_wrap( ~ timePoint)
+
+print(p.a.og)
+
+
+#check correlation
+cor.test(dz$baseMem, dz$anxSx6m, method = "pearson")
+cor.test(dz$baseMem, dz$anxSx12m, method = "pearson")
+```
+
+## PTSD sx
+
+```{r graph, warning=FALSE}
+p.p <- ggplot() +
+  geom_point(
+    data = dz %>% mutate(timePoint = "2m"),
+    mapping = aes(x = baseMem, y = PTSDsx2m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "5m"),
+    mapping = aes(x = baseMem, y = PTSDsx5m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = dz %>% mutate(timePoint = "8m"),
+    mapping = aes(x = baseMem, y = PTSDsx8m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  facet_wrap( ~ timePoint)
+
+print(p.p)
+
+p.p.og <- ggplot() +
+  geom_point(
+    data = d %>% mutate(timePoint = "2m"),
+    mapping = aes(x = baseMem, y = PTSDsx2m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "5m"),
+    mapping = aes(x = baseMem, y = PTSDsx5m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  geom_point(
+    data = d %>% mutate(timePoint = "8m"),
+    mapping = aes(x = baseMem, y = PTSDsx8m),
+    position = position_jitter(width = 0.03, height = 0.03),
+    alpha = 0.25
+  ) +
+  facet_wrap( ~ timePoint)
+
+print(p.p.og)
+
+#check correlation
+cor.test(dz$baseMem, dz$PTSDsx2m, method = "pearson")
+cor.test(dz$baseMem, dz$PTSDsx8m, method = "pearson")
+```
+
+# Data-analysis
+
+## Primary analysis (symptom severity outcomes)
+
+### Stage one
+
+Analysing all primary symptom outcomes per study
+
+```{r function}
+single_ipd = function(df,
+                      formula = "depSx12m ~ baseMem + baseDepSx",
+                      predictor = 'baseMem') {
+  lm = glm(as.formula(formula),
+           data = df,
+           family = gaussian(link = 'identity'))
+  results = list(coef = coef(lm)[predictor],
+                 SE = summary(lm)$coef[predictor, 'Std. Error'])
+  return(results)
+}
+```
+
+```{r Askelund}
+#depression sx 6m
+Ask.d6 <-
+  single_ipd(dz %>% filter(Study == "Askelund"), formula = "depSx6m ~baseMem + baseDepSx")
+#depression sx 12m
+Ask.d12 <- single_ipd(dz %>% filter(Study == "Askelund"))
+
+##positive memory specificity
+#depression sx 6m
+Ask.d6.pos <-
+  single_ipd(dz %>% filter(Study == "Askelund"),
+             formula = "depSx6m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+#depression sx 12m
+Ask.d12.pos <-
+  single_ipd(dz %>% filter(Study == "Askelund"),
+             formula = "depSx12m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+#depression sx 6m
+Ask.d6.neg <-
+  single_ipd(dz %>% filter(Study == "Askelund"),
+             formula = "depSx6m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+#depression sx 12m
+Ask.d12.neg <-
+  single_ipd(dz %>% filter(Study == "Askelund"),
+             formula = "depSx12m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Gutenbrunner}
+#depression sx 12m
+Gut.d12 <- single_ipd(dz %>% filter(Study == "Gutenbrunner"))
+#depression sx 24m
+Gut.d24 <-
+  single_ipd(dz %>% filter(Study == "Gutenbrunner"), formula = "depSx24m ~baseMem + baseDepSx")
+
+#anxiety sx 12m
+Gut.a12 <-
+  single_ipd(dz %>% filter(Study == "Gutenbrunner"), formula = "anxSx12m ~baseMem + baseAnxSx")
+#anxiety sx 24m
+Gut.a24 <-
+  single_ipd(dz %>% filter(Study == "Gutenbrunner"), formula = "anxSx24m ~baseMem + baseAnxSx")
+
+##postive memory specificity
+#depression sx 12m
+Gut.d12.pos <-
+  single_ipd(dz %>% filter(Study == "Gutenbrunner"),
+             formula = "depSx12m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+#depression sx 24m
+Gut.d24.pos <-
+  single_ipd(dz %>% filter(Study == "Gutenbrunner"),
+             formula = "depSx24m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+#depression sx 12m
+Gut.d12.neg <-
+  single_ipd(dz %>% filter(Study == "Gutenbrunner"),
+             formula = "depSx12m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+#depression sx 24m
+Gut.d24.neg <-
+  single_ipd(dz %>% filter(Study == "Gutenbrunner"),
+             formula = "depSx24m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Hamlat}
+#depression sx 6m
+Ham.d6 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "depSx6m ~ baseMem + baseDepSx")
+#depression sx 12m
+Ham.d12 <- single_ipd(dz %>% filter(Study == "Hamlat"))
+#depression sx 18m
+Ham.d18 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "depSx18m ~baseMem + baseDepSx")
+#depression sx 24m
+Ham.d24 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "depSx24m ~baseMem + baseDepSx")
+#depression sx 48m
+Ham.d48 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "depSx48m ~baseMem + baseDepSx")
+
+#anxiety sx 6m
+Ham.a6 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "anxSx6m ~baseMem + baseAnxSx")
+#anxiety sx 12m
+Ham.a12 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "anxSx12m ~baseMem + baseAnxSx")
+#anxiety sx 18m
+Ham.a18 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "anxSx18m ~baseMem + baseAnxSx")
+#anxiety sx 24m
+Ham.a24 <-
+  single_ipd(dz %>% filter(Study == "Hamlat"), formula = "anxSx24m ~baseMem + baseAnxSx")
+```
+
+```{r Hiller}
+#depression sx 6m
+Hil.d6 <-
+  single_ipd(dz %>% filter(Study == "Hiller"), formula = "depSx6m ~ baseMem + baseDepSx")
+
+##positive memory specificity
+Hil.d6.pos <-
+  single_ipd(dz %>% filter(Study == "Hiller"),
+             formula = "depSx6m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Hil.d6.neg <-
+  single_ipd(dz %>% filter(Study == "Hiller"),
+             formula = "depSx6m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Hipwell}
+#depression sx 12m
+Hip.d12 <- single_ipd(dz %>% filter(Study == "Hipwell"))
+
+##positive memory specificity
+Hip.d12.pos <-
+  single_ipd(dz %>% filter(Study == "Hipwell"),
+             formula = "depSx12m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Hip.d12.neg <-
+  single_ipd(dz %>% filter(Study == "Hipwell"),
+             formula = "depSx12m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Hitchcock}
+#depression sx 6m
+Hit.d6 <-
+  single_ipd(dz %>% filter(Study == "Hitchcock"), formula = "depSx6m ~ baseMem + baseDepSx")
+
+#PTSD sx 2m
+Hit.p2 <-
+  single_ipd(dz %>% filter(Study == "Hitchcock"), formula = "PTSDsx2m ~ baseMem + basePTSDsx")
+
+#PTSD sx 5m
+Hit.p5 <-
+  single_ipd(dz %>% filter(Study == "Hitchcock"), formula = "PTSDsx5m ~ baseMem + basePTSDsx")
+
+##positive memory specificity
+Hit.d6.pos <-
+  single_ipd(dz %>% filter(Study == "Hitchcock"),
+             formula = "depSx6m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Hit.d6.neg <-
+  single_ipd(dz %>% filter(Study == "Hitchcock"),
+             formula = "depSx6m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Hitchcock 2}
+#depression sx 12m
+Hit2.d12 <- single_ipd(dz %>% filter(Study == "Hitchcock2"))
+
+#anxiety sx 12m
+Hit2.a12 <-
+  single_ipd(dz %>% filter(Study == "Hitchcock2"), formula = "anxSx12m ~ baseMem + baseAnxSx")
+
+#PTSD sx 8m
+Hit2.p8 <-
+  single_ipd(dz %>% filter(Study == "Hitchcock2"), formula = "PTSDsx8m ~ baseMem + basePTSDsx")
+
+##positive memory specificity
+Hit2.d12.pos <-
+  single_ipd(dz %>% filter(Study == "Hitchcock2"),
+             formula = "depSx12m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Hit2.d12.neg <-
+  single_ipd(dz %>% filter(Study == "Hitchcock2"),
+             formula = "depSx12m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r McCrory}
+#depression sx 48m
+Mc.d48 <-
+  single_ipd(dz %>% filter(Study == "McCrory"), formula = "depSx48m ~ baseMem + baseDepSx")
+
+#anxiety sx 27m
+Mc.a27 <-
+  single_ipd(dz %>% filter(Study == "McCrory"), formula = "anxSx27m ~ baseMem + baseAnxSx")
+
+##positive memory specificity
+Mc.d48.pos <-
+  single_ipd(dz %>% filter(Study == "McCrory"),
+             formula = "depSx48m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Mc.d48.neg <-
+  single_ipd(dz %>% filter(Study == "McCrory"),
+             formula = "depSx48m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Nixon ASD}
+#depression sx 6m
+NixA.d6 <-
+  single_ipd(dz %>% filter(Study == "Nixon_ASD"), formula = "depSx6m ~ baseMem + baseDepSx")
+
+#PTSD sx 2m
+NixA.p2 <-
+  single_ipd(dz %>% filter(Study == "Nixon_ASD"), formula = "PTSDsx2m ~ baseMem + basePTSDsx")
+
+##positive memory specificity
+NixA.d6.pos <-
+  single_ipd(dz %>% filter(Study == "Nixon_ASD"),
+             formula = "depSx6m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+NixA.d6.neg <-
+  single_ipd(dz %>% filter(Study == "Nixon_ASD"),
+             formula = "depSx6m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Nixon PTSD}
+#depression sx 6m
+NixP.d6 <-
+  single_ipd(dz %>% filter(Study == "Nixon_PTSD"), formula = "depSx6m ~ baseMem + baseDepSx")
+
+#PTSD sx 2m
+NixP.p2 <-
+  single_ipd(dz %>% filter(Study == "Nixon_PTSD"), formula = "PTSDsx2m ~ baseMem + basePTSDsx")
+
+##positive memory specificity
+NixP.d6.pos <-
+  single_ipd(dz %>% filter(Study == "Nixon_PTSD"),
+             formula = "depSx6m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+NixP.d6.neg <-
+  single_ipd(dz %>% filter(Study == "Nixon_PTSD"),
+             formula = "depSx6m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Rice}
+#depression sx 12m
+Rice.d12 <- single_ipd(dz %>% filter(Study == "Rice"))
+
+##positive memory specificity
+Rice.d12.pos <-
+  single_ipd(dz %>% filter(Study == "Rice"),
+             formula = "depSx12m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Rice.d12.neg <-
+  single_ipd(dz %>% filter(Study == "Rice"),
+             formula = "depSx12m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Warne}
+#depression sx 48m
+Warn.d48 <-
+  single_ipd(dz %>% filter(Study == "Warne"), formula = "depSx48m ~ baseMem + baseDepSx")
+
+##positive memory specificity
+Warn.d48.pos <-
+  single_ipd(dz %>% filter(Study == "Warne"),
+             formula = "depSx48m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Warn.d48.neg <-
+  single_ipd(dz %>% filter(Study == "Warne"),
+             formula = "depSx48m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+```{r Woody}
+#depression sx 6m
+Wood.d6 <-
+  single_ipd(dz %>% filter(Study == "Woody"), formula = "depSx6m ~ baseMem + baseDepSx")
+#depression sx 12m
+Wood.d12 <- single_ipd(dz %>% filter(Study == "Woody"))
+#depression sx 18m
+Wood.d18 <-
+  single_ipd(dz %>% filter(Study == "Woody"), formula = "depSx18m ~baseMem + baseDepSx")
+#depression sx 24m
+Wood.d24 <-
+  single_ipd(dz %>% filter(Study == "Woody"), formula = "depSx24m ~baseMem + baseDepSx")
+
+#anxiety sx 6m
+Wood.a6 <-
+  single_ipd(dz %>% filter(Study == "Woody"), formula = "anxSx6m ~baseMem + baseAnxSx")
+#anxiety sx 12m
+Wood.a12 <-
+  single_ipd(dz %>% filter(Study == "Woody"), formula = "anxSx12m ~baseMem + baseAnxSx")
+#anxiety sx 18m
+Wood.a18 <-
+  single_ipd(dz %>% filter(Study == "Woody"), formula = "anxSx18m ~baseMem + baseAnxSx")
+#anxiety sx 24m
+Wood.a24 <-
+  single_ipd(dz %>% filter(Study == "Woody"), formula = "anxSx24m ~baseMem + baseAnxSx")
+
+##negative memory specificity
+Wood.d6.pos <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx6m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+Wood.d12.pos <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx12m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+Wood.d18.pos <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx18m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+Wood.d24.pos <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx24m ~ baseMemPos + baseDepSx",
+             predictor = "baseMemPos")
+
+##negative memory specificity
+Wood.d6.neg <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx6m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+
+Wood.d12.neg <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx12m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+
+Wood.d18.neg <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx18m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+
+Wood.d24.neg <-
+  single_ipd(dz %>% filter(Study == "Woody"),
+             formula = "depSx24m ~ baseMemNeg + baseDepSx",
+             predictor = "baseMemNeg")
+```
+
+### Multivariate for depression at multiple time points
+
+#### Estimate within-study variance - covariance
+
+```{r Askelund, warning=F}
+A_dm1 <- depSx6m ~ baseMem + baseDepSx
+A_dm2 <- depSx12m ~ baseMem + baseDepSx
+
+A_dm_fitsur <-
+  systemfit(
+    list(dep6m = A_dm1, dep12m = A_dm2),
+    data = subset(dz, Study == "Askelund"),
+    method = "SUR"
+  )
+Ask_dm_V11 <- A_dm_fitsur$coefCov["dep6m_baseMem", "dep6m_baseMem"]
+Ask_dm_V12 <- A_dm_fitsur$coefCov["dep6m_baseMem", "dep12m_baseMem"]
+Ask_dm_V22 <- A_dm_fitsur$coefCov["dep12m_baseMem", "dep12m_baseMem"]
+```
+
+```{r Gutenbrunner}
+G_dm2 <- depSx12m ~ baseMem + baseDepSx 
+G_dm4 <- depSx24m ~ baseMem + baseDepSx 
+
+G_dm_fitsur <-
+  systemfit(
+    list(dep12m = G_dm2, dep24m = G_dm4),
+    data = subset(dz, Study == "Gutenbrunner"),
+    method = "SUR"
+  )
+Gut_dm_V22 <- G_dm_fitsur$coefCov["dep12m_baseMem", "dep12m_baseMem"]
+Gut_dm_V24 <- G_dm_fitsur$coefCov["dep12m_baseMem", "dep24m_baseMem"]
+Gut_dm_V44 <- G_dm_fitsur$coefCov["dep24m_baseMem", "dep24m_baseMem"]
+```
+
+```{r Hamlat,warning=F}
+H_dm1 <- depSx6m ~ baseMem + baseDepSx 
+H_dm2 <- depSx12m ~ baseMem + baseDepSx 
+H_dm3 <- depSx18m ~ baseMem + baseDepSx 
+H_dm4 <- depSx24m ~ baseMem + baseDepSx
+H_dm5 <- depSx48m ~ baseMem + baseDepSx 
+
+H_dm_fitsur <-
+  systemfit(
+    list(
+      dep6m = H_dm1,
+      dep12m = H_dm2,
+      dep18m = H_dm3,
+      dep24m = H_dm4,
+      dep48m = H_dm5
+    ),
+    data = subset(dz, Study == "Hamlat"),
+    method = "SUR"
+  )
+
+Ham_dm_V11 <- H_dm_fitsur$coefCov["dep6m_baseMem", "dep6m_baseMem"]
+Ham_dm_V12 <- H_dm_fitsur$coefCov["dep6m_baseMem", "dep12m_baseMem"]
+Ham_dm_V13 <- H_dm_fitsur$coefCov["dep6m_baseMem", "dep18m_baseMem"]
+Ham_dm_V14 <- H_dm_fitsur$coefCov["dep6m_baseMem", "dep24m_baseMem"]
+Ham_dm_V15 <- H_dm_fitsur$coefCov["dep6m_baseMem", "dep48m_baseMem"]
+Ham_dm_V22 <- H_dm_fitsur$coefCov["dep12m_baseMem", "dep12m_baseMem"]
+Ham_dm_V23 <- H_dm_fitsur$coefCov["dep12m_baseMem", "dep18m_baseMem"]
+Ham_dm_V24 <- H_dm_fitsur$coefCov["dep12m_baseMem", "dep24m_baseMem"]
+Ham_dm_V25 <- H_dm_fitsur$coefCov["dep12m_baseMem", "dep48m_baseMem"]
+Ham_dm_V33 <- H_dm_fitsur$coefCov["dep18m_baseMem", "dep18m_baseMem"]
+Ham_dm_V34 <- H_dm_fitsur$coefCov["dep18m_baseMem", "dep24m_baseMem"]
+Ham_dm_V35 <- H_dm_fitsur$coefCov["dep18m_baseMem", "dep48m_baseMem"]
+Ham_dm_V44 <- H_dm_fitsur$coefCov["dep24m_baseMem", "dep24m_baseMem"]
+Ham_dm_V45 <- H_dm_fitsur$coefCov["dep24m_baseMem", "dep48m_baseMem"]
+Ham_dm_V55 <- H_dm_fitsur$coefCov["dep48m_baseMem", "dep48m_baseMem"]
+```
+
+```{r Hiller}
+Hil_dm_V11 <- Hil.d6$SE**2 #this gives the same variance as variance-covariance estimates output by stats::vcov()
+```
+
+```{r Hipwell}
+Hip_dm_V22 <- Hip.d12$SE**2
+```
+
+```{r Hitchcock}
+Hit_dm_V11 <- Hit.d6$SE**2
+```
+
+```{r Hitchcock2}
+Hit2_dm_V22 <- Hit2.d12$SE**2
+```
+
+```{r McCrory}
+Mc_dm_V55 <- Mc.d48$SE**2
+```
+
+```{r Nixon_ASD & Nixon_PTSD}
+NixA_dm_V11 <- NixA.d6$SE**2
+
+NixP_dm_V11 <- NixP.d6$SE**2
+```
+
+```{r Rice}
+Rice_dm_V22 <- Rice.d12$SE**2
+```
+
+```{r Warne}
+Warn_dm_V55 <- Warn.d48$SE**2
+```
+
+```{r Woody, warning=F}
+Wo_dm1 <- depSx6m ~ baseMem + baseDepSx 
+Wo_dm2 <- depSx12m ~ baseMem + baseDepSx 
+Wo_dm3 <- depSx18m ~ baseMem + baseDepSx 
+Wo_dm4 <- depSx24m ~ baseMem + baseDepSx 
+
+Wo_dm_fitsur <-
+  systemfit(
+    list(
+      dep6m = Wo_dm1,
+      dep12m = Wo_dm2,
+      dep18m = Wo_dm3,
+      dep24m = Wo_dm4
+    ),
+    data = subset(dz, Study == "Woody"),
+    method = "SUR"
+  )
+
+Wood_dm_V11 <- Wo_dm_fitsur$coefCov["dep6m_baseMem", "dep6m_baseMem"]
+Wood_dm_V12 <- Wo_dm_fitsur$coefCov["dep6m_baseMem", "dep12m_baseMem"]
+Wood_dm_V13 <- Wo_dm_fitsur$coefCov["dep6m_baseMem", "dep18m_baseMem"]
+Wood_dm_V14 <- Wo_dm_fitsur$coefCov["dep6m_baseMem", "dep24m_baseMem"]
+Wood_dm_V22 <- Wo_dm_fitsur$coefCov["dep12m_baseMem", "dep12m_baseMem"]
+Wood_dm_V23 <- Wo_dm_fitsur$coefCov["dep12m_baseMem", "dep18m_baseMem"]
+Wood_dm_V24 <- Wo_dm_fitsur$coefCov["dep12m_baseMem", "dep24m_baseMem"]
+Wood_dm_V33 <- Wo_dm_fitsur$coefCov["dep18m_baseMem", "dep18m_baseMem"]
+Wood_dm_V34 <- Wo_dm_fitsur$coefCov["dep18m_baseMem", "dep24m_baseMem"]
+Wood_dm_V44 <- Wo_dm_fitsur$coefCov["dep24m_baseMem", "dep24m_baseMem"]
+```
+
+#### Stage two
+
+To allow for the inclusion of all studies in a multivariate model with all timepoints, data augmentation approach was used for studies that contributed to at least one but not all timepoints (Riley et al., 2021). In this approach, if an outcome is not measured in a study, coefficient estimate and covariance with other timepoint are 0.0000, and variance is 100000. This essentially means that there is no effect or any correlation with other outcomes, while variance of estimate is so large that it forces the multivariate model to ignore these outcomes when estimating the pooled effect for that timepoint.
+
+```{r}
+dep_mv_n <- data.frame (
+  Study = c("Askelund et al. 2019", "Gutenbrunner et al. 2018", "Hamlat et al. 2015", "Hiller unpub.", "Hipwell et al. 2011", "Hitchcock et al. 2014", "Hitchcock unpub.", "Puetz et al. 2021", "Nixon et al 2013a", "Nixon et al 2013b", "Rawal & Rice 2012", "Warne et al. 2020", "Woody et al. 2022"),
+  n = c(930, 269, 397, 28, 236, 74, 195, 41, 65, 67, 259, 5880, 249),
+  dep6m = c(Ask.d6$coef, 0.0000, Ham.d6$coef, Hil.d6$coef, 0.0000, Hit.d6$coef, 0.0000, 0.0000, NixA.d6$coef, NixP.d6$coef, 0.0000, 0.0000,  Wood.d6$coef),
+  dep12m = c(Ask.d12$coef, Gut.d12$coef, Ham.d12$coef, 0.0000, Hip.d12$coef, 0.0000, Hit2.d12$coef, 0.0000, 0.0000, 0.0000, Rice.d12$coef, 0.0000, Wood.d12$coef),
+  dep18m = c(0.0000, 0.0000, Ham.d18$coef, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d18$coef),
+  dep24m = c(0.0000, Gut.d24$coef, Ham.d24$coef, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d24$coef),
+  dep48m = c(0.0000, 0.0000, Ham.d48$coef, 0.0000, 0.0000, 0.0000, 0.0000, Mc.d48$coef, 0.0000, 0.0000, 0.0000, Warn.d48$coef, 0.0000),
+  V11 = c(Ask_dm_V11, 100000, Ham_dm_V11, Hil_dm_V11, 100000, Hit_dm_V11, 100000, 100000, NixA_dm_V11, NixP_dm_V11, 100000, 100000, Wood_dm_V11),
+  V12 = c(Ask_dm_V12, 0.0000, Ham_dm_V12, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V12),
+  V13 = c(0.0000, 0.0000, Ham_dm_V13, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V13),
+  V14 = c(0.0000, 0.0000, Ham_dm_V14, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V14),
+  V15 = c(0.0000, 0.0000, Ham_dm_V15, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V22 = c(Ask_dm_V22, Gut_dm_V22, Ham_dm_V22, 100000, Hip_dm_V22, 100000, Hit2_dm_V22, 100000, 100000, 100000, Rice_dm_V22, 100000, Wood_dm_V22),
+  V23 = c(0.0000, 0.0000, Ham_dm_V23, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V23),
+  V24 = c(0.0000, Gut_dm_V24, Ham_dm_V24, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V24),
+  V25 = c(0.0000, 0.0000, Ham_dm_V25, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V33 = c(100000, 100000, Ham_dm_V33, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dm_V33),
+  V34 = c(0.0000, 0.0000, Ham_dm_V34, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V34),
+  V35 = c(0.0000, 0.0000, Ham_dm_V35, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V44 = c(100000, Gut_dm_V44, Ham_dm_V44, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dm_V44),
+  V45 = c(0.0000, 0.0000, Ham_dm_V45, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V55 = c(100000, 100000, Ham_dm_V55, 100000, 100000, 100000, 100000, Mc_dm_V55, 100000, 100000, 100000, Warn_dm_V55, 100000))
+```
+
+Check number of outcomes per studies match expectation
+
+```{r}
+dep_mv_desc <-
+  dep_mv_n %>% pivot_longer(cols = dep6m:dep48m,
+                            values_to = "b",
+                            names_to = "Outcome") %>% 
+  select(c(Study, n, Outcome, b)) %>% filter(!(b == 0))
+
+dep_mv_desc_sum <-
+  dep_mv_desc %>% group_by(Outcome) %>% summarise(N = sum(n)) %>% ungroup()
+```
+
+#### Fit Multivariate Mixed-effect Model
+
+```{r}
+y <- as.matrix(dep_mv_n[3:7])
+S <- as.matrix(dep_mv_n[8:22])
+model.dep.mv1 <- mvmeta(y, S)
+summary(model.dep.mv1)
+```
+
+### Multivariate IPD MA anxiety symptoms
+
+#### Estimate within-study variance - covariance
+
+```{r Gutenbrunner}
+G_am2 <- anxSx12m ~ baseMem + baseAnxSx 
+G_am4 <- anxSx24m ~ baseMem + baseAnxSx 
+
+G_am_fitsur <-
+  systemfit(
+    list(anx12m = G_am2, anx24m = G_am4),
+    data = subset(dz, Study == "Gutenbrunner"),
+    method = "SUR"
+  )
+Gut_am_V22 <- G_am_fitsur$coefCov["anx12m_baseMem", "anx12m_baseMem"]
+Gut_am_V24 <- G_am_fitsur$coefCov["anx12m_baseMem", "anx24m_baseMem"]
+Gut_am_V44 <- G_am_fitsur$coefCov["anx24m_baseMem", "anx24m_baseMem"]
+```
+
+```{r Hamlat, warning=F}
+H_am1 <- anxSx6m ~ baseMem + baseAnxSx 
+H_am2 <- anxSx12m ~ baseMem + baseAnxSx 
+H_am3 <- anxSx18m ~ baseMem + baseAnxSx 
+H_am4 <- anxSx24m ~ baseMem + baseAnxSx
+
+H_am_fitsur <-
+  systemfit(
+    list(
+      anx6m = H_am1,
+      anx12m = H_am2,
+      anx18m = H_am3,
+      anx24m = H_am4
+    ),
+    data = subset(dz, Study == "Hamlat"),
+    method = "SUR"
+  )
+
+Ham_am_V11 <- H_am_fitsur$coefCov["anx6m_baseMem", "anx6m_baseMem"]
+Ham_am_V12 <- H_am_fitsur$coefCov["anx6m_baseMem", "anx12m_baseMem"]
+Ham_am_V13 <- H_am_fitsur$coefCov["anx6m_baseMem", "anx18m_baseMem"]
+Ham_am_V14 <- H_am_fitsur$coefCov["anx6m_baseMem", "anx24m_baseMem"]
+Ham_am_V22 <- H_am_fitsur$coefCov["anx12m_baseMem", "anx12m_baseMem"]
+Ham_am_V23 <- H_am_fitsur$coefCov["anx12m_baseMem", "anx18m_baseMem"]
+Ham_am_V24 <- H_am_fitsur$coefCov["anx12m_baseMem", "anx24m_baseMem"]
+Ham_am_V33 <- H_am_fitsur$coefCov["anx18m_baseMem", "anx18m_baseMem"]
+Ham_am_V34 <- H_am_fitsur$coefCov["anx18m_baseMem", "anx24m_baseMem"]
+Ham_am_V44 <- H_am_fitsur$coefCov["anx24m_baseMem", "anx24m_baseMem"]
+```
+
+```{r Hitchcock2}
+Hit2_am_V22 <- Hit2.a12$SE**2
+```
+
+```{r Woody,warning=F}
+Wo_am1 <- anxSx6m ~ baseMem + baseAnxSx 
+Wo_am2 <- anxSx12m ~ baseMem + baseAnxSx 
+Wo_am3 <- anxSx18m ~ baseMem + baseAnxSx 
+Wo_am4 <- anxSx24m ~ baseMem + baseAnxSx 
+
+Wo_am_fitsur <-
+  systemfit(
+    list(
+      anx6m = Wo_am1,
+      anx12m = Wo_am2,
+      anx18m = Wo_am3,
+      anx24m = Wo_am4
+    ),
+    data = subset(dz, Study == "Woody"),
+    method = "SUR"
+  )
+
+Wood_am_V11 <- Wo_am_fitsur$coefCov["anx6m_baseMem", "anx6m_baseMem"]
+Wood_am_V12 <- Wo_am_fitsur$coefCov["anx6m_baseMem", "anx12m_baseMem"]
+Wood_am_V13 <- Wo_am_fitsur$coefCov["anx6m_baseMem", "anx18m_baseMem"]
+Wood_am_V14 <- Wo_am_fitsur$coefCov["anx6m_baseMem", "anx24m_baseMem"]
+Wood_am_V22 <- Wo_am_fitsur$coefCov["anx12m_baseMem", "anx12m_baseMem"]
+Wood_am_V23 <- Wo_am_fitsur$coefCov["anx12m_baseMem", "anx18m_baseMem"]
+Wood_am_V24 <- Wo_am_fitsur$coefCov["anx12m_baseMem", "anx24m_baseMem"]
+Wood_am_V33 <- Wo_am_fitsur$coefCov["anx18m_baseMem", "anx18m_baseMem"]
+Wood_am_V34 <- Wo_am_fitsur$coefCov["anx18m_baseMem", "anx24m_baseMem"]
+Wood_am_V44 <- Wo_am_fitsur$coefCov["anx24m_baseMem", "anx24m_baseMem"]
+```
+
+#### Stage two
+
+```{r}
+anx_mv_n <- data.frame (Study = c("Gutenbrunner", "Hamlat", "Hitchcock2", "Woody"),
+                        n = c(269, 397, 195, 249),
+                        anx6m = c(0.0000, Ham.a6$coef, 0.0000, Wood.a6$coef),
+                        anx12m = c(Gut.a12$coef, Ham.a12$coef, Hit2.a12$coef, Wood.a12$coef),
+                        anx18m = c(0.0000, Ham.a18$coef, 0.0000, Wood.a18$coef),
+                        anx24m = c(Gut.a24$coef, Ham.a24$coef, 0.0000, Wood.a24$coef),
+                        V11 = c(100000, Ham_am_V11, 100000, Wood_am_V11),
+                        V12 = c(0.0000, Ham_am_V12, 0.0000, Wood_am_V12),
+                        V13 = c(0.0000, Ham_am_V13, 0.0000, Wood_am_V13),
+                        V14 = c(0.0000, Ham_am_V14, 0.0000, Wood_am_V14),
+                        V22 = c(Gut_am_V22, Ham_am_V22, Hit2_am_V22, Wood_am_V22),
+                        V23 = c(0.0000, Ham_am_V23, 0.0000, Wood_am_V23),
+                        V24 = c(Gut_am_V24, Ham_am_V24, 0.0000, Wood_am_V24),
+                        V33 = c(100000, Ham_am_V33, 100000, Wood_am_V33),
+                        V34 = c(0.0000, Ham_am_V34, 0.0000, Wood_am_V34),
+                        V44 = c(Gut_am_V44, Ham_am_V44, 100000, Wood_am_V44))
+                         
+```
+
+```{r}
+anx_mv_desc <-
+  anx_mv_n %>% pivot_longer(cols = anx6m:anx24m,
+                            values_to = "b",
+                            names_to = "Outcome") %>% 
+  select(c(Study, n, Outcome, b)) %>% filter(!(b == 0))
+
+anx_mv_desc_sum <-
+  anx_mv_desc %>% group_by(Outcome) %>% summarise(N = sum(n))
+```
+
+#### Fit Multivariate Mixed-effect Model
+
+```{r}
+y.anx <- as.matrix(anx_mv_n[3:6])
+S.anx <- as.matrix(anx_mv_n[7:16])
+anx.mv.model <- mvmeta(y.anx, S.anx)
+summary(anx.mv.model)
+```
+
+### Multivariate PTSD symptoms
+
+#### Estimate within-study variance - covariance
+
+```{r Hitchcock, warning=F}
+H_pm1 <- PTSDsx2m ~ baseMem + basePTSDsx 
+H_pm2 <- PTSDsx5m ~ baseMem + basePTSDsx 
+
+H_pm_fitsur <-
+  systemfit(
+    list(ptsd2m = H_pm1, ptsd5m = H_pm2),
+    data = subset(dz, Study == "Hitchcock"),
+    method = "SUR"
+  )
+
+Hit_pm_V11 <- H_pm_fitsur$coefCov["ptsd2m_baseMem", "ptsd2m_baseMem"]
+Hit_pm_V12 <- H_pm_fitsur$coefCov["ptsd2m_baseMem", "ptsd5m_baseMem"]
+Hit_pm_V22 <- H_pm_fitsur$coefCov["ptsd5m_baseMem", "ptsd5m_baseMem"]
+```
+
+```{r Hitchcock 2}
+Hit2_pm_V33 <- Hit2.p8$SE**2
+```
+
+```{r Nixon}
+NixA_pm_V11 <- NixA.p2$SE**2
+
+NixP_pm_V11 <- NixP.p2$SE**2
+```
+
+#### Stage two
+
+```{r make dataframe}
+ptsd_mv_n <- data.frame (Study = c("Hitchcock", "Hitchcock2", "Nixon_ASD", "Nixon_PTSD"),
+                         n = c(74, 195, 65, 67),
+                        ptsd2m = c(Hit.p2$coef, 0.0000, NixA.p2$coef, NixP.p2$coef),
+                        ptsd5m = c(Hit.p5$coef, 0.0000, 0.0000, 0.0000),
+                        ptsd8m = c(0.0000, Hit2.p8$coef, 0.0000, 0.0000),
+                        V11 = c(Hit_pm_V11, 100000, NixA_pm_V11, NixP_pm_V11),
+                        V12 = c(Hit_pm_V12, 0.0000, 0.0000, 0.0000),
+                        V13 = c(0.0000, 0.0000, 0.0000, 0.0000),
+                        V22 = c(Hit_pm_V22, 100000, 100000, 100000),
+                        V23 = c(0.0000, 0.0000, 0.0000, 0.0000),
+                        V33 = c(100000, Hit2_pm_V33, 100000, 100000))
+                         
+```
+
+```{r}
+ptsd_mv_desc <-
+  ptsd_mv_n %>% pivot_longer(cols = ptsd2m:ptsd8m,
+                             values_to = "b",
+                             names_to = "Outcome") %>% select(c(Study, n, Outcome, b)) %>% filter(!(b == 0))
+
+ptsd_mv_desc_sum <-
+  ptsd_mv_desc %>% group_by(Outcome) %>% summarise(N = sum(n))
+```
+
+#### Fit Multivariate Mixed-effect Model
+
+```{r}
+y.ptsd <- as.matrix(ptsd_mv_n[3:5])
+S.ptsd <- as.matrix(ptsd_mv_n[6:11])
+ptsd.mv.model <- mvmeta(y.ptsd, S.ptsd)
+summary(ptsd.mv.model)
+```
+
+### Multivariate for depression at multiple time points \~ positive mem spec
+
+#### Estimate variance - covariance for single study
+
+```{r Askelund, warning=F}
+A_dmp1 <- depSx6m ~ baseMemPos + baseDepSx 
+A_dmp2 <- depSx12m ~ baseMemPos + baseDepSx 
+
+A_dmp_fitsur <-
+  systemfit(
+    list(dep6m = A_dmp1, dep12m = A_dmp2),
+    data = subset(dz, Study == "Askelund"),
+    method = "SUR"
+  )
+
+Ask_dmp_V11 <- A_dmp_fitsur$coefCov["dep6m_baseMemPos", "dep6m_baseMemPos"]
+Ask_dmp_V12 <- A_dmp_fitsur$coefCov["dep6m_baseMemPos", "dep12m_baseMemPos"]
+Ask_dmp_V22 <- A_dmp_fitsur$coefCov["dep12m_baseMemPos", "dep12m_baseMemPos"]
+```
+
+```{r Gutenbrunner}
+G_dmp2 <- depSx12m ~ baseMemPos + baseDepSx 
+G_dmp4 <- depSx24m ~ baseMemPos + baseDepSx 
+
+G_dmp_fitsur <-
+  systemfit(
+    list(dep12m = G_dmp2, dep24m = G_dmp4),
+    data = subset(dz, Study == "Gutenbrunner"),
+    method = "SUR"
+  )
+Gut_dmp_V22 <- G_dmp_fitsur$coefCov["dep12m_baseMemPos", "dep12m_baseMemPos"]
+Gut_dmp_V24 <- G_dmp_fitsur$coefCov["dep12m_baseMemPos", "dep24m_baseMemPos"]
+Gut_dmp_V44 <- G_dmp_fitsur$coefCov["dep24m_baseMemPos", "dep24m_baseMemPos"]
+```
+
+```{r Hiller}
+Hil_dmp_V11 <- Hil.d6.pos$SE**2
+```
+
+```{r Hipwell}
+Hip_dmp_V22 <- Hip.d12.pos$SE**2
+```
+
+```{r Hitchcock}
+Hit_dmp_V11 <- Hit.d6.pos$SE**2
+```
+
+```{r Hitchcock2}
+Hit2_dmp_V22 <- Hit2.d12.pos$SE**2
+```
+
+```{r McCrory}
+Mc_dmp_V55 <- Mc.d48.pos$SE**2
+```
+
+```{r Nixon_ASD & Nixon_PTSD}
+NixA_dmp_V11 <- NixA.d6.pos$SE**2
+
+NixP_dmp_V11 <- NixP.d6.pos$SE**2
+```
+
+```{r Rice}
+Rice_dmp_V22 <- Rice.d12.pos$SE**2
+```
+
+```{r Warne}
+Warn_dmp_V55 <- Warn.d48.pos$SE**2
+```
+
+```{r Woody, warning=F}
+Wo_dmp1 <- depSx6m ~ baseMemPos + baseDepSx 
+Wo_dmp2 <- depSx12m ~ baseMemPos + baseDepSx 
+Wo_dmp3 <- depSx18m ~ baseMemPos + baseDepSx 
+Wo_dmp4 <- depSx24m ~ baseMemPos + baseDepSx 
+
+Wo_dmp_fitsur <-
+  systemfit(
+    list(
+      dep6m = Wo_dmp1,
+      dep12m = Wo_dmp2,
+      dep18m = Wo_dmp3,
+      dep24m = Wo_dmp4
+    ),
+    data = subset(dz, Study == "Woody"),
+    method = "SUR"
+  )
+
+Wood_dmp_V11 <- Wo_dmp_fitsur$coefCov["dep6m_baseMemPos", "dep6m_baseMemPos"]
+Wood_dmp_V12 <- Wo_dmp_fitsur$coefCov["dep6m_baseMemPos", "dep12m_baseMemPos"]
+Wood_dmp_V13 <- Wo_dmp_fitsur$coefCov["dep6m_baseMemPos", "dep18m_baseMemPos"]
+Wood_dmp_V14 <- Wo_dmp_fitsur$coefCov["dep6m_baseMemPos", "dep24m_baseMemPos"]
+Wood_dmp_V22 <- Wo_dmp_fitsur$coefCov["dep12m_baseMemPos", "dep12m_baseMemPos"]
+Wood_dmp_V23 <- Wo_dmp_fitsur$coefCov["dep12m_baseMemPos", "dep18m_baseMemPos"]
+Wood_dmp_V24 <- Wo_dmp_fitsur$coefCov["dep12m_baseMemPos", "dep24m_baseMemPos"]
+Wood_dmp_V33 <- Wo_dmp_fitsur$coefCov["dep18m_baseMemPos", "dep18m_baseMemPos"]
+Wood_dmp_V34 <- Wo_dmp_fitsur$coefCov["dep18m_baseMemPos", "dep24m_baseMemPos"]
+Wood_dmp_V44 <- Wo_dmp_fitsur$coefCov["dep24m_baseMemPos", "dep24m_baseMemPos"]
+```
+
+#### Stage two
+
+```{r}
+dep_mv_pos <- data.frame (
+  Study = c("Askelund", "Gutenbrunner", "Hiller", "Hipwell", "Hitchcock", "Hitchcock2", "McCrory" ,"Nixon_ASD", "Nixon_PTSD", "Rice", "Warne", "Woody"),
+  dep6m = c(Ask.d6.pos$coef, 0.0000, Hil.d6.pos$coef, 0.0000, Hit.d6.pos$coef, 0.0000, 0.0000, NixA.d6.pos$coef, NixP.d6.pos$coef, 0.0000, 0.0000,  Wood.d6.pos$coef),
+  dep12m = c(Ask.d12.pos$coef, Gut.d12.pos$coef, 0.0000, Hip.d12.pos$coef, 0.0000, Hit2.d12.pos$coef, 0.0000, 0.0000, 0.0000, Rice.d12.pos$coef, 0.0000, Wood.d12.pos$coef),
+  dep18m = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d18.pos$coef),
+  dep24m = c(0.0000, Gut.d24.pos$coef, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d24.pos$coef),
+  dep48m = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Mc.d48.pos$coef, 0.0000, 0.0000, 0.0000, Warn.d48.pos$coef, 0.0000),
+  V11 = c(Ask_dmp_V11, 100000, Hil_dmp_V11, 100000, Hit_dmp_V11, 100000, 100000, NixA_dmp_V11, NixP_dmp_V11, 100000, 100000, Wood_dmp_V11),
+  V12 = c(Ask_dmp_V12, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmp_V12),
+  V13 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmp_V13),
+  V14 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmp_V14),
+  V15 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V22 = c(Ask_dmp_V22, Gut_dmp_V22, 100000, Hip_dmp_V22, 100000, Hit2_dmp_V22, 100000, 100000, 100000, Rice_dmp_V22, 100000, Wood_dmp_V22),
+  V23 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmp_V23),
+  V24 = c(0.0000, Gut_dmp_V24, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmp_V24),
+  V25 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V33 = c(100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dmp_V33),
+  V34 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmp_V34),
+  V35 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V44 = c(100000, Gut_dmp_V44, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dmp_V44),
+  V45 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V55 = c(100000, 100000, 100000, 100000, 100000, 100000, Mc_dmp_V55, 100000, 100000, 100000, Warn_dmp_V55, 100000))
+```
+
+#### Fit Multivariate Mixed-effect Model
+
+```{r}
+y.dpos <- as.matrix(dep_mv_pos[2:6])
+S.dpos <- as.matrix(dep_mv_pos[7:21])
+model.dep.mv.pos <- mvmeta(y.dpos, S.dpos)
+summary(model.dep.mv.pos)
+```
+
+### Multivariate for depression at multiple time points \~ negative mem spec
+
+#### Estimate variance - covariance for single study
+
+```{r Askelund, warning=F}
+A_dmn1 <- depSx6m ~ baseMemNeg + baseDepSx 
+A_dmn2 <- depSx12m ~ baseMemNeg + baseDepSx 
+
+A_dmn_fitsur <-
+  systemfit(
+    list(dep6m = A_dmn1, dep12m = A_dmn2),
+    data = subset(dz, Study == "Askelund"),
+    method = "SUR"
+  )
+Ask_dmn_V11 <- A_dmn_fitsur$coefCov["dep6m_baseMemNeg", "dep6m_baseMemNeg"]
+Ask_dmn_V12 <- A_dmn_fitsur$coefCov["dep6m_baseMemNeg", "dep12m_baseMemNeg"]
+Ask_dmn_V22 <- A_dmn_fitsur$coefCov["dep12m_baseMemNeg", "dep12m_baseMemNeg"]
+```
+
+```{r Gutenbrunner}
+G_dmn2 <- depSx12m ~ baseMemNeg + baseDepSx 
+G_dmn4 <- depSx24m ~ baseMemNeg + baseDepSx 
+
+G_dmn_fitsur <-
+  systemfit(
+    list(dep12m = G_dmn2, dep24m = G_dmn4),
+    data = subset(dz, Study == "Gutenbrunner"),
+    method = "SUR"
+  )
+
+Gut_dmn_V22 <- G_dmn_fitsur$coefCov["dep12m_baseMemNeg", "dep12m_baseMemNeg"]
+Gut_dmn_V24 <- G_dmn_fitsur$coefCov["dep12m_baseMemNeg", "dep24m_baseMemNeg"]
+Gut_dmn_V44 <- G_dmn_fitsur$coefCov["dep24m_baseMemNeg", "dep24m_baseMemNeg"]
+```
+
+```{r Hiller}
+Hil_dmn_V11 <- Hil.d6.neg$SE**2
+```
+
+```{r Hipwell}
+Hip_dmn_V22 <- Hip.d12.neg$SE**2
+```
+
+```{r Hitchcock}
+Hit_dmn_V11 <- Hit.d6.neg$SE**2
+```
+
+```{r Hitchcock2}
+Hit2_dmn_V22 <- Hit2.d12.neg$SE**2
+```
+
+```{r McCrory}
+Mc_dmn_V55 <- Mc.d48.neg$SE**2
+```
+
+```{r Nixon_ASD & Nixon_PTSD}
+NixA_dmn_V11 <- NixA.d6.neg$SE**2
+
+NixP_dmn_V11 <- NixP.d6.neg$SE**2
+```
+
+```{r Rice}
+Rice_dmn_V22 <- Rice.d12.neg$SE**2
+```
+
+```{r Warne}
+Warn_dmn_V55 <- Warn.d48.neg$SE**2
+```
+
+```{r Woody, warning=F}
+Wo_dmn1 <- depSx6m ~ baseMemNeg + baseDepSx 
+Wo_dmn2 <- depSx12m ~ baseMemNeg + baseDepSx 
+Wo_dmn3 <- depSx18m ~ baseMemNeg + baseDepSx 
+Wo_dmn4 <- depSx24m ~ baseMemNeg + baseDepSx 
+
+Wo_dmn_fitsur <-
+  systemfit(
+    list(
+      dep6m = Wo_dmn1,
+      dep12m = Wo_dmn2,
+      dep18m = Wo_dmn3,
+      dep24m = Wo_dmn4
+    ),
+    data = subset(dz, Study == "Woody"),
+    method = "SUR"
+  )
+
+Wood_dmn_V11 <- Wo_dmn_fitsur$coefCov["dep6m_baseMemNeg", "dep6m_baseMemNeg"]
+Wood_dmn_V12 <- Wo_dmn_fitsur$coefCov["dep6m_baseMemNeg", "dep12m_baseMemNeg"]
+Wood_dmn_V13 <- Wo_dmn_fitsur$coefCov["dep6m_baseMemNeg", "dep18m_baseMemNeg"]
+Wood_dmn_V14 <- Wo_dmn_fitsur$coefCov["dep6m_baseMemNeg", "dep24m_baseMemNeg"]
+Wood_dmn_V22 <- Wo_dmn_fitsur$coefCov["dep12m_baseMemNeg", "dep12m_baseMemNeg"]
+Wood_dmn_V23 <- Wo_dmn_fitsur$coefCov["dep12m_baseMemNeg", "dep18m_baseMemNeg"]
+Wood_dmn_V24 <- Wo_dmn_fitsur$coefCov["dep12m_baseMemNeg", "dep24m_baseMemNeg"]
+Wood_dmn_V33 <- Wo_dmn_fitsur$coefCov["dep18m_baseMemNeg", "dep18m_baseMemNeg"]
+Wood_dmn_V34 <- Wo_dmn_fitsur$coefCov["dep18m_baseMemNeg", "dep24m_baseMemNeg"]
+Wood_dmn_V44 <- Wo_dmn_fitsur$coefCov["dep24m_baseMemNeg", "dep24m_baseMemNeg"]
+```
+
+#### Stage two
+
+```{r}
+dep_mv_neg <- data.frame (
+  Study = c("Askelund", "Gutenbrunner", "Hiller", "Hipwell", "Hitchcock", "Hitchcock2", "McCrory" ,"Nixon_ASD", "Nixon_PTSD", "Rice", "Warne", "Woody"),
+  dep6m = c(Ask.d6.neg$coef, 0.0000, Hil.d6.neg$coef, 0.0000, Hit.d6.neg$coef, 0.0000, 0.0000, NixA.d6.neg$coef, NixP.d6.neg$coef, 0.0000, 0.0000,  Wood.d6.neg$coef),
+  dep12m = c(Ask.d12.neg$coef, Gut.d12.neg$coef, 0.0000, Hip.d12.neg$coef, 0.0000, Hit2.d12.neg$coef, 0.0000, 0.0000, 0.0000, Rice.d12.neg$coef, 0.0000, Wood.d12.neg$coef),
+  dep18m = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d18.neg$coef),
+  dep24m = c(0.0000, Gut.d24.neg$coef, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d24.neg$coef),
+  dep48m = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Mc.d48.neg$coef, 0.0000, 0.0000, 0.0000, Warn.d48.neg$coef, 0.0000),
+  V11 = c(Ask_dmn_V11, 100000, Hil_dmn_V11, 100000, Hit_dmn_V11, 100000, 100000, NixA_dmn_V11, NixP_dmn_V11, 100000, 100000, Wood_dmn_V11),
+  V12 = c(Ask_dmn_V12, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmn_V12),
+  V13 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmn_V13),
+  V14 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmn_V14),
+  V15 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V22 = c(Ask_dmn_V22, Gut_dmn_V22, 100000, Hip_dmn_V22, 100000, Hit2_dmn_V22, 100000, 100000, 100000, Rice_dmn_V22, 100000, Wood_dmn_V22),
+  V23 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmn_V23),
+  V24 = c(0.0000, Gut_dmn_V24, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmn_V24),
+  V25 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V33 = c(100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dmn_V33),
+  V34 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dmn_V34),
+  V35 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V44 = c(100000, Gut_dmn_V44, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dmn_V44),
+  V45 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V55 = c(100000, 100000, 100000, 100000, 100000, 100000, Mc_dmn_V55, 100000, 100000, 100000, Warn_dmn_V55, 100000))
+```
+
+```{r}
+y.dneg <- as.matrix(dep_mv_neg[2:6])
+S.dneg <- as.matrix(dep_mv_neg[7:21])
+model.dep.mv.neg <- mvmeta(y.dneg, S.dneg)
+summary(model.dep.mv.neg)
+```
+
+### Multivariate model all symptoms at 18 and 24 months, predicted by mem spec
+
+#### Estimate variance - covariance for single study
+
+```{r Gutenbrunner}
+G_sxm_fitsur <-
+  systemfit(
+    list(dep24m = G_dm4, anx24m = G_am4),
+    data = subset(dz, Study == "Gutenbrunner"),
+    method = "SUR"
+  )
+
+Gut_sxm_V33 <- G_sxm_fitsur$coefCov["dep24m_baseMem", "dep24m_baseMem"]
+Gut_sxm_V34 <- G_sxm_fitsur$coefCov["dep24m_baseMem", "anx24m_baseMem"]
+Gut_sxm_V44 <- G_sxm_fitsur$coefCov["anx24m_baseMem", "anx24m_baseMem"]
+```
+
+```{r Hamlat, warning=F}
+H_sxm_fitsur <-
+  systemfit(
+    list(
+      dep18m = H_dm3,
+      anx18m = H_am3,
+      dep24m = H_dm4,
+      anx24m = H_am4
+    ),
+    data = subset(dz, Study == "Hamlat"),
+    method = "SUR"
+  )
+
+Ham_sxm_V11 <- H_sxm_fitsur$coefCov["dep18m_baseMem", "dep18m_baseMem"]
+Ham_sxm_V12 <- H_sxm_fitsur$coefCov["dep18m_baseMem", "anx18m_baseMem"]
+Ham_sxm_V13 <- H_sxm_fitsur$coefCov["dep18m_baseMem", "dep24m_baseMem"]
+Ham_sxm_V14 <- H_sxm_fitsur$coefCov["dep18m_baseMem", "anx24m_baseMem"]
+Ham_sxm_V22 <- H_sxm_fitsur$coefCov["anx18m_baseMem", "anx18m_baseMem"]
+Ham_sxm_V23 <- H_sxm_fitsur$coefCov["anx18m_baseMem", "dep24m_baseMem"]
+Ham_sxm_V24 <- H_sxm_fitsur$coefCov["anx18m_baseMem", "anx24m_baseMem"]
+Ham_sxm_V33 <- H_sxm_fitsur$coefCov["dep24m_baseMem", "dep24m_baseMem"]
+Ham_sxm_V34 <- H_sxm_fitsur$coefCov["dep24m_baseMem", "anx24m_baseMem"]
+Ham_sxm_V44 <- H_sxm_fitsur$coefCov["anx24m_baseMem", "anx24m_baseMem"]
+```
+
+```{r Woody, warning=F}
+Wo_sxm_fitsur <-
+  systemfit(
+    list(
+      dep18m = Wo_dm3,
+      anx18m = Wo_am3,
+      dep24m = Wo_dm4,
+      anx24m = Wo_am4
+    ),
+    data = subset(dz, Study == "Woody"),
+    method = "SUR"
+  )
+
+Wood_sxm_V11 <- Wo_sxm_fitsur$coefCov["dep18m_baseMem", "dep18m_baseMem"]
+Wood_sxm_V12 <- Wo_sxm_fitsur$coefCov["dep18m_baseMem", "anx18m_baseMem"]
+Wood_sxm_V13 <- Wo_sxm_fitsur$coefCov["dep18m_baseMem", "dep24m_baseMem"]
+Wood_sxm_V14 <- Wo_sxm_fitsur$coefCov["dep18m_baseMem", "anx24m_baseMem"]
+Wood_sxm_V22 <- Wo_sxm_fitsur$coefCov["anx18m_baseMem", "anx18m_baseMem"]
+Wood_sxm_V23 <- Wo_sxm_fitsur$coefCov["anx18m_baseMem", "dep24m_baseMem"]
+Wood_sxm_V24 <- Wo_sxm_fitsur$coefCov["anx18m_baseMem", "anx24m_baseMem"]
+Wood_sxm_V33 <- Wo_sxm_fitsur$coefCov["dep24m_baseMem", "dep24m_baseMem"]
+Wood_sxm_V34 <- Wo_sxm_fitsur$coefCov["dep24m_baseMem", "anx24m_baseMem"]
+Wood_sxm_V44 <- Wo_sxm_fitsur$coefCov["anx24m_baseMem", "anx24m_baseMem"]
+```
+
+#### Stage two
+
+```{r}
+sx_mv <- data.frame (Study = c("Gutenbrunner", "Hamlat", "Woody"),
+                     dep18m = c(0.0000, Ham.d18$coef, Wood.d18$coef),
+                     anx18m = c(0.0000, Ham.a18$coef, Wood.a18$coef),
+                     dep24m = c(Gut.d24$coef, Ham.d24$coef, Wood.d24$coef),
+                     anx24m = c(Gut.a24$coef, Ham.a24$coef, Wood.a24$coef),
+                     V11 = c(100000, Ham_sxm_V11, Wood_sxm_V11),
+                     V12 = c(0.0000, Ham_sxm_V12, Wood_sxm_V12),
+                     V13 = c(0.0000, Ham_sxm_V13, Wood_sxm_V13),
+                     V14 = c(0.0000, Ham_sxm_V14, Wood_sxm_V14),
+                     V22 = c(100000, Ham_sxm_V22, Wood_sxm_V22),
+                     V23 = c(0.0000, Ham_sxm_V23, Wood_sxm_V23),
+                     V24 = c(0.0000, Ham_sxm_V24, Wood_sxm_V24),
+                     V33 = c(Gut_sxm_V33, Ham_sxm_V33, Wood_sxm_V33),
+                     V34 = c(Gut_sxm_V34, Ham_sxm_V34, Wood_sxm_V34),
+                     V44 = c(Gut_sxm_V44, Ham_sxm_V44, Wood_sxm_V44))
+```
+
+```{r}
+y.sx <- as.matrix(sx_mv[2:5])
+S.sx <- as.matrix(sx_mv[6:15])
+model.sx.mv1 <- mvmeta(y.sx, S.sx)
+summary(model.sx.mv1)
+```
+
+### Graph for symptoms
+
+```{r}
+forest.models = do.call('c', lapply(list(dep_mv_n, anx_mv_n, ptsd_mv_n), function(data){
+  outcome_col_numbers = grep("m$", colnames(data))
+  forest.model.list = lapply(outcome_col_numbers, function(col_n){
+  # filter
+    data$yi = data[,col_n]
+    variable_number = match(col_n, outcome_col_numbers)
+    data$vi = data[,paste0("V", variable_number,variable_number)]
+    forest.model <- rma.uni(yi = yi, vi = vi, slab = Study, data = data %>% filter (yi != 0), method = "REML")
+    return(forest.model)
+  })
+  names(forest.model.list) = colnames(data)[outcome_col_numbers]
+  return(forest.model.list)
+}))
+```
+
+#### Depressive sx all time points
+
+```{r}
+forest.plot.d6 <-
+  forest(
+    forest.models$dep6m,
+    header = c("Authors and Year", "b Estimate [95%CI]"),
+    at = seq(-4, 4, by = 2)
+  )
+forest.plot.d12 <-
+  forest(forest.models$dep12m, at = seq(-4, 4, by = 2))
+forest.plot.d18 <- forest(forest.models$dep18m, alim = c(-4, 4))
+forest.plot.d24 <- forest(forest.models$dep24m, alim = c(-4, 4))
+forest.plot.d48 <- forest(forest.models$dep48m, alim = c(-4, 4))
+```
+
+### Funnel plots
+
+```{r}
+funnel.rma(forest.models$dep6m)
+funnel.rma(forest.models$dep12m)
+```
+
+## Sensitivity analysis (symptom severity outcomes)
+
+### One-stage univariate models (pre-registered models)
+
+```{r}
+depSx12.uni  <-  lme(depSx12m ~ baseMem + baseDepSx ,
+                   data = dz,
+                   random    = ~ 1 + baseMem| Study,
+                   na.action = na.omit,
+                   control   = lmeControl(opt='optim'))
+
+summary(depSx12.uni)
+```
+
+```{r}
+anxSx12.uni  <-  lme(anxSx12m ~ baseMem + baseAnxSx ,
+                   data = dz,
+                   random    = ~ 1 + baseMem| Study,
+                   na.action = na.omit,
+                   control   = lmeControl(opt='optim'))
+
+summary(anxSx12.uni)
+```
+
+```{r}
+PTSDsx2.uni <-  lme(PTSDsx2m ~ baseMem + basePTSDsx,
+                   data = dz,
+                   random    = ~ 1 + baseMem| Study,
+                   na.action = na.omit,
+                   control   = lmeControl(opt='optim'))
+
+summary(PTSDsx2.uni)
+```
+
+### One-stage univariate models (with unstandardised score)
+
+```{r}
+summary (
+  lme(
+    depSx12m ~ baseMem + baseDepSx ,
+    data = d,
+    random    = ~ 1 + baseMem | Study,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+)
+```
+
+```{r}
+summary(
+  lme(
+    anxSx12m ~ baseMem + baseAnxSx ,
+    data = d,
+    random    = ~ 1 + baseMem | Study,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+)
+```
+
+```{r}
+summary(
+  lme(
+    PTSDsx2m ~ baseMem + basePTSDsx,
+    data = d,
+    random    = ~ 1 + baseMem | Study,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+)
+```
+
+### One-stage univariate models (with Age, Sex and IQ where available)
+
+```{r}
+summary (
+  lme(
+    depSx12m ~ baseMem + baseDepSx + Age + Sex + Baseline_IQ,
+    data = dz,
+    random    = ~ 1 + baseMem | Study,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+)
+```
+
+```{r}
+summary(
+  lme(
+    anxSx12m ~ baseMem + baseAnxSx + Age + Sex,
+    data = dz,
+    random    = ~ 1 + baseMem | Study,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+)
+```
+
+```{r}
+summary(
+  lme(
+    PTSDsx2m ~ baseMem + basePTSDsx + Age + Sex,
+    data = dz,
+    random    = ~ 1 + baseMem | Study,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+)
+```
+
+## Primary analysis (Diagnosis models - survival analysis)
+
+### Presence of any diagnosis
+
+#### Calculate presence of diagnosis and time to first onset variables
+
+```{r, warning=F}
+# look for columns that have _dia_ (for diagnosis)
+diagnosis.columns = grep("^Base.*_dia$|_dia_", var_by_study$value, value=TRUE)
+# check if column starts with Base to set time=0, otherwise extract time in months from end of column name
+diagnosis.columns.time = ifelse(grepl("^Base", diagnosis.columns), 0, as.numeric(gsub(".*_dia_", "", gsub("m$", "", diagnosis.columns))))
+diagnosis.columns.name = gsub("_dia.*$", "", gsub(".*_int_", "", diagnosis.columns))
+dz = as.data.frame(dz)
+dz$Diagnosed_disorder = ""
+dz$Diagnosis_time = NA
+dz$First_Diagnosis = NA
+dz$Is_Diagnosed = NA
+dz[,sort(unique(diagnosis.columns.name))] = NA
+dz[,paste(sort(unique(diagnosis.columns.name)),"_time",sep='')] = NA
+
+for(i in 1:length(diagnosis.columns)){
+  column = diagnosis.columns[i]
+  time=diagnosis.columns.time[i]
+  diagnosis = diagnosis.columns.name[i]
+  diagnosis.time = paste(diagnosis, "_time", sep = '')
+  diagnosed.rows = which(dz[,column] == 1) 
+  undiagnosed.rows = which(dz[,column] == 0)
+  still.undiagnosed.rows = intersect(undiagnosed.rows, which(dz[,diagnosis]==0))
+  newly.undiagnosed.rows = intersect(undiagnosed.rows, which(is.na(dz[,diagnosis])))
+  already.diagnosed.rows = intersect(diagnosed.rows, which(dz[,diagnosis]==1))
+  newly.diagnosed.rows = setdiff(diagnosed.rows, which(dz[,diagnosis]==1))
+  
+  dz[diagnosed.rows,diagnosis] = 1
+  dz[undiagnosed.rows,diagnosis] = ifelse(is.na(dz[undiagnosed.rows,diagnosis]), 0,
+                                          pmax(dz[undiagnosed.rows,diagnosis],0)) 
+  # pmax (parallel maximum) sets to 0 if already 0 and 1 if already diagnosed
+  if(length(already.diagnosed.rows)>0){
+     dz[already.diagnosed.rows,diagnosis.time] = pmin(dz[already.diagnosed.rows,diagnosis.time], time,na.rm=T)
+  }
+  if(length(newly.diagnosed.rows)>0){
+    dz[newly.diagnosed.rows,diagnosis.time] = time
+  }
+ 
+  if(length(still.undiagnosed.rows)>0){
+    dz[still.undiagnosed.rows,diagnosis.time] = pmax(dz[still.undiagnosed.rows,diagnosis.time], time,na.rm=T)
+  }
+  if(length(newly.undiagnosed.rows)>0){
+    dz[newly.undiagnosed.rows,diagnosis.time] = time
+  }
+  
+  
+}
+all.diagnosis.names = sort(unique(diagnosis.columns.name))
+all.diagnosis.times = paste(all.diagnosis.names, "_time", sep='')
+dz$Diagnosed_disorder = apply(dz[,all.diagnosis.names], 1, function(i){paste(all.diagnosis.names[which(i==1)],collapse=', ')})
+dz$First_Diagnosis = sapply(1:nrow(dz), function(i){
+  diagnoses = which(dz[i,all.diagnosis.names] == 1)
+  if(length(diagnoses)==0){return('')}
+  return(paste(all.diagnosis.names[diagnoses][which(dz[i,all.diagnosis.times][diagnoses] == min(dz[i,all.diagnosis.times][diagnoses], na.rm=T))], collapse=', '))
+})
+dz$Diagnosis_time = sapply(1:nrow(dz), function(i){
+  diagnoses = which(dz[i,all.diagnosis.names] == 1)
+  if(sum(!is.na(dz[i,all.diagnosis.times]))==0){return(NA)}
+  if(length(diagnoses)==0){
+    return(max(dz[i,all.diagnosis.times], na.rm=T))
+  } else {
+    return(min(dz[i,all.diagnosis.times][diagnoses],na.rm=T))
+  }
+})
+dz$Is_Diagnosed = as.integer(rowSums(dz[,all.diagnosis.names], na.rm = T) > 0)
+dz$Is_Diagnosed = ifelse(is.na(dz$Diagnosis_time), NA, dz$Is_Diagnosed)
+
+#manually check
+#dia='MDD';View(dz[,c(paste0(dia,"_time"), dia, diagnosis.columns[diagnosis.columns.name==dia])])
+```
+
+#### Exploratory graphs
+
+```{r}
+ggplot(dz %>% 
+         filter(!is.na(Diagnosis_time)), aes(x = factor(Is_Diagnosed), 
+                                             y = baseMem)) + geom_boxplot() + 
+  facet_wrap(~ Diagnosis_time) + 
+  theme_bw() +
+  xlab("Any disorder diagnosis") + 
+  ylab("Baseline Memory Specificity") 
+```
+
+#### Assess missingness
+
+```{r}
+#using all dx as main outcome of interest to assessed missingness
+dz <- dz %>% 
+  mutate(naDiagnosis = as.numeric(if_else(is.na(Is_Diagnosed), 0, 1)))
+
+diagnosis.studies <-
+  as.character(c("Askelund", "Hamlat", "Hipwell", "Rice", "Sumner"))
+
+d.missing.diagnosis <- dz %>% filter(Study %in% diagnosis.studies)
+cor.test(d.missing.diagnosis$Age, d.missing.diagnosis$naDiagnosis)
+cor.test(d.missing.diagnosis$Sex, d.missing.diagnosis$naDiagnosis)
+cor.test(d.missing.diagnosis$baseMem, d.missing.diagnosis$naDiagnosis)
+```
+
+#### Fit mixed-effect Cox survival model
+
+```{r survival analysis model}
+dz$Study.f <- as.factor(dz$Study)
+dz$Study.n <- as.numeric(dz$Study.f)
+
+#Categorise baseline memory for plotting survival curve
+dz$memCat <-
+  cut(
+    dz$baseMem,
+    breaks = 3,
+    labels = c(
+      "Low memory specificity",
+      "Mid memory specificity",
+      "High memory specificity"
+    )
+  )
+
+dia.object <- Surv(dz$Diagnosis_time, dz$Is_Diagnosed)
+
+dia.cox.rand.clustered <-
+  coxme(
+    dia.object ~ baseMem + (baseMem |
+                              Study.n) + Study,
+    data = dz,
+    ties = c("breslow")
+  )
+dia.cox.rand.clustered
+#95%CI for HR
+exp(confint(dia.cox.rand.clustered))
+
+#HR for 10% reduction in mem spec
+any.dia.HR.10 <- exp(dia.cox.rand.clustered$coefficients[["baseMem"]]* (-0.1))
+any.dia.HR.10
+any.dia.timeRatio.10 <- 1/any.dia.HR.10
+any.dia.timeRatio.10
+```
+
+```{r}
+ggsurvplot(
+  surv_fit(dia.object ~  memCat, data = dz),
+  palette = "grey",
+  xlab = "Time to First Diagnosis (months)",
+  ylab = "Probability of Absent Diagnosis",
+  legend.title = "Memory category",
+  legend.labs = c(
+    "Low Memory Specificity",
+    "Mid Memory Specificity",
+    "High Memory Specificity"
+  )
+)
+```
+
+#### Exploring cue valence
+
+```{r}
+dia.pos.cox.rand.clustered <- coxme(dia.object ~ baseMemPos + (baseMemPos | Study.n) + Study, data = dz, ties = c("breslow"))
+dia.pos.cox.rand.clustered
+
+dia.neg.cox.rand.clustered <- coxme(dia.object ~ baseMemNeg + (baseMemNeg | Study.n) + Study, data = dz, ties = c("breslow"))
+dia.neg.cox.rand.clustered
+```
+
+#### Additional analysis with only diagnosis-free participants at baseline
+
+```{r}
+dz.dia.free <- dz %>% filter(!(Is_Diagnosed == 1 & Diagnosis_time == 0))
+dia.free.surv.object <- Surv(dz.dia.free$Diagnosis_time, dz.dia.free$Is_Diagnosed)
+
+dia.free.cox.rand.clustered <- coxme(
+  dia.free.surv.object ~ baseMem + (baseMem |
+                                      Study) + Study,
+  data = dz.dia.free,
+  ties = c("breslow")
+)
+dia.free.cox.rand.clustered
+exp(confint(dia.free.cox.rand.clustered))
+
+#95%CI for HR
+exp(confint(dia.free.cox.rand.clustered))
+
+#HR for 10% reduction in mem spec
+any.dia.HR.10 <- exp(dia.free.cox.rand.clustered$coefficients[["baseMem"]]* (-0.1))
+any.dia.HR.10
+any.dia.timeRatio.10 <- 1/any.dia.HR.10
+any.dia.timeRatio.10
+```
+
+```{r}
+ggsurvplot(
+  surv_fit(dia.free.surv.object ~  memCat, data = dz.dia.free),
+  palette = "grey",
+  xlab = "Time to First Diagnosis (months)",
+  ylab = "Probability of Absent Diagnosis",
+  legend.title = "Memory Category",
+  legend.labs = c(
+    "Low Memory Specificity",
+    "Mid Memory Specificity",
+    "High Memory Specificity"
+  )
+)
+```
+
+### Presence of depressive disorders
+
+```{r calculate variables}
+depressive.disorder.group = c("CMDD", "MDD", "dep", "dys", "minor_dep")
+in.disorder.group = all.diagnosis.names %in% depressive.disorder.group
+
+dz$Depressive_disorders_diagnosed = as.integer(rowSums(dz[,depressive.disorder.group], na.rm=T) > 0)
+
+dz$Depressive_disorders_time = sapply(1:nrow(dz), function(i){
+  diagnoses = which(dz[i,all.diagnosis.names][in.disorder.group] == 1)
+  if(sum(!is.na(dz[i,all.diagnosis.times][in.disorder.group]))==0){return(NA)}
+  if(length(diagnoses)==0){
+    return(max(dz[i,all.diagnosis.times][in.disorder.group], na.rm=T))
+  } else {
+    return(min(dz[i,all.diagnosis.times][in.disorder.group][diagnoses],na.rm=T))
+  }
+})
+
+#View(dz[,c("Depressive_disorders_diagnosed", "Depressive_disorders_time", depressive.disorder.group, paste0(depressive.disorder.group,"_time"))])
+```
+
+#### Exploratory graphs
+
+```{r}
+ggplot(dz %>% filter(!is.na(Depressive_disorders_time)), aes(x = factor(Depressive_disorders_diagnosed), y =
+                                                               baseMem)) + geom_boxplot() + facet_wrap( ~ Depressive_disorders_time) + theme_bw() +
+  xlab("Any depressive disorder diagnosis") + ylab("Baseline Memory Specificity") 
+```
+
+#### Fit mixed-effect Cox model
+
+```{r survival analysis models}
+dep_dia_object <-
+  Surv(dz$Depressive_disorders_time,
+       dz$Depressive_disorders_diagnosed)
+
+dep.dia.cox.rand.clustered <- coxme(dep_dia_object ~ baseMem + (baseMem| Study.n) + Study, data = dz, ties = c("breslow"))
+dep.dia.cox.rand.clustered
+#95%CI for HR
+exp(confint(dep.dia.cox.rand.clustered))
+
+#HR for 10% reduction in mem spec
+dep.dia.HR.10 <- exp(dep.dia.cox.rand.clustered$coefficients[["baseMem"]]* (-0.1))
+dep.dia.HR.10
+dep.dia.timeRatio.10 <- 1/dep.dia.HR.10
+dep.dia.timeRatio.10
+```
+
+```{r plot}
+dep.dia.plot <- surv_fit(dep_dia_object ~ memCat, data = dz)
+ggsurvplot(
+  dep.dia.plot,
+  palette = "grey",
+  pval = F,
+  xlab = "Time to First Depression Diagnosis (months)",
+  ylab = "Probability of Absent Depressive Diagnosis",
+  legend.title = "Memory Category",
+  legend.labs = c(
+    "Low Memory Specificity",
+    "Mid Memory Specificity",
+    "High Memory Specificity"
+  )
+)
+```
+
+```{r}
+dz.dep.dia.free <- dz %>% filter(!(Depressive_disorders_diagnosed == 1 & Depressive_disorders_time == 0))
+dep.dia.free.surv.object <- Surv(
+  dz.dep.dia.free$Depressive_disorders_time,
+  dz.dep.dia.free$Depressive_disorders_diagnosed
+)
+
+dep.dia.free.cox.rand.clustered <- coxme(
+  dep.dia.free.surv.object ~ baseMem + (baseMem |
+                                      Study) + Study + Baseline_IQ + Age + Sex,
+  data = dz.dep.dia.free,
+  ties = c("breslow")
+)
+dep.dia.free.cox.rand.clustered
+exp(confint(dep.dia.free.cox.rand.clustered))
+
+```
+
+### Presence of eating disorders
+
+```{r calculate variables}
+eating.disorder.group = c("anorexia", "binge", "bulimia", "eating", "ednos")
+in.eating.disorder.group = all.diagnosis.names %in% eating.disorder.group
+
+dz$Eating_disorders_diagnosed = as.integer(rowSums(dz[,eating.disorder.group], na.rm=T) > 0)
+
+dz$Eating_disorders_time = sapply(1:nrow(dz), function(i){
+  diagnoses = which(dz[i,all.diagnosis.names][in.eating.disorder.group] == 1)
+  if(sum(!is.na(dz[i,all.diagnosis.times][in.eating.disorder.group]))==0){return(NA)}
+  if(length(diagnoses)==0){
+    return(max(dz[i,all.diagnosis.times][in.eating.disorder.group], na.rm=T))
+  } else {
+    return(min(dz[i,all.diagnosis.times][in.eating.disorder.group][diagnoses],na.rm=T))
+  }
+})
+```
+
+```{r survival analysis models}
+eat_dia_object <- Surv(dz$Eating_disorders_time, dz$Eating_disorders_diagnosed)
+
+eat.dia.cox.rand.clustered <- coxme(eat_dia_object ~ baseMem + (baseMem| Study.n) + Study, data = dz, ties = c("breslow"))
+eat.dia.cox.rand.clustered #model converged too early, likely due to small number of cases and large number of parameters to estimates, thus, we used a simpler model without random effects of baseline memory by Study.
+
+eat.dia.cox.strata <- coxph(eat_dia_object ~ strata(Study.f) + baseMem, data = dz, ties = c("breslow"))
+eat.dia.cox.strata
+#95%CI for HR
+exp(confint(eat.dia.cox.strata))
+
+#HR for 10% reduction in mem spec
+eat.dia.HR.10 <- exp(eat.dia.cox.strata$coefficients[["baseMem"]]* (-0.1))
+eat.dia.HR.10
+eat.dia.timeRatio.10 <- 1/eat.dia.HR.10
+eat.dia.timeRatio.10
+```
+
+### Presence of anxiety disorders
+
+```{r calculate variables}
+anx.disorder.group = c("anx", "GAD", "panic", "social_phobia")
+in.anx.disorder.group = all.diagnosis.names %in% anx.disorder.group
+
+dz$Anxiety_disorders_diagnosed = as.integer(rowSums(dz[,anx.disorder.group], na.rm=T) > 0)
+
+dz$Anxiety_disorders_time = sapply(1:nrow(dz), function(i){
+  diagnoses = which(dz[i,all.diagnosis.names][in.anx.disorder.group] == 1)
+  if(sum(!is.na(dz[i,all.diagnosis.times][in.anx.disorder.group]))==0){return(NA)}
+  if(length(diagnoses)==0){
+    return(max(dz[i,all.diagnosis.times][in.anx.disorder.group], na.rm=T))
+  } else {
+    return(min(dz[i,all.diagnosis.times][in.anx.disorder.group][diagnoses],na.rm=T))
+  }
+})
+```
+
+```{r survival analysis models}
+anx_dia_object <- Surv(dz$Anxiety_disorders_time, dz$Anxiety_disorders_diagnosed)
+
+anx.dia.cox.rand.clustered <- coxme(anx_dia_object ~ baseMem + (baseMem| Study.n) + Study, data = dz, ties = c("breslow"))
+anx.dia.cox.rand.clustered
+#95%CI for HR
+exp(confint(anx.dia.cox.rand.clustered))
+```
+
+### Presence of posttraumatric stress disorder diagnosis
+
+```{r calculate variables}
+stress.disorder.group = c("PTSD", "ASD")
+in.stress.disorder.group = all.diagnosis.names %in% stress.disorder.group
+
+dz$Stress_disorders_diagnosed = as.integer(rowSums(dz[,stress.disorder.group], na.rm=T) > 0)
+
+dz$Stress_disorders_time = sapply(1:nrow(dz), function(i){
+  diagnoses = which(dz[i,all.diagnosis.names][in.stress.disorder.group] == 1)
+  if(sum(!is.na(dz[i,all.diagnosis.times][in.stress.disorder.group]))==0){return(NA)}
+  if(length(diagnoses)==0){
+    return(max(dz[i,all.diagnosis.times][in.stress.disorder.group], na.rm=T))
+  } else {
+    return(min(dz[i,all.diagnosis.times][in.stress.disorder.group][diagnoses],na.rm=T))
+  }
+})
+```
+
+```{r survival analysis models}
+Stress_dia_object <- Surv(dz$Stress_disorders_time, dz$Stress_disorders_diagnosed)
+
+Stress.dia.cox.rand.clustered <- coxme(Stress_dia_object ~ baseMem + (baseMem| Study.n) + Study, data = dz, ties = c("breslow"))
+Stress.dia.cox.rand.clustered
+#95%CI for HR
+exp(confint(Stress.dia.cox.rand.clustered))
+```
+
+### Presence of bipolar diagnosis
+
+```{r calculate variables}
+bipolar.disorder.group = c("bip1", "bip2")
+in.bipolar.disorder.group = all.diagnosis.names %in% bipolar.disorder.group
+
+dz$Bipolar_disorders_diagnosed = as.integer(rowSums(dz[,bipolar.disorder.group], na.rm=T) > 0)
+
+dz$Bipolar_disorders_time = sapply(1:nrow(dz), function(i){
+  diagnoses = which(dz[i,all.diagnosis.names][in.bipolar.disorder.group] == 1)
+  if(sum(!is.na(dz[i,all.diagnosis.times][in.bipolar.disorder.group]))==0){return(NA)}
+  if(length(diagnoses)==0){
+    return(max(dz[i,all.diagnosis.times][in.bipolar.disorder.group], na.rm=T))
+  } else {
+    return(min(dz[i,all.diagnosis.times][in.bipolar.disorder.group][diagnoses],na.rm=T))
+  }
+})
+```
+
+```{r survival analysis models}
+Bipolar_dia_object <- Surv(dz$Bipolar_disorders_time, dz$Bipolar_disorders_diagnosed)
+
+Bipolar.dia.cox.rand.clustered <- coxme(Bipolar_dia_object ~ baseMem + (baseMem| Study.f) + Study, data = dz, ties = c("breslow"))
+Bipolar.dia.cox.rand.clustered
+#95%CI for HR
+exp(confint(Bipolar.dia.cox.rand.clustered))
+```
+
+## Sensitivity check
+
+### Mixed-effect Cox model without estimated stratified hazard by study
+
+Recommended sensitivity check model from Keele Univerisity IPD-MA workshop
+
+```{r}
+dia.cox.rand.shared <-
+  coxme(
+    dia.object ~ baseMem + (1 + baseMem |
+                              Study) ,
+    data = dz,
+    ties = c("breslow")
+  )
+dia.cox.rand.shared
+```
+
+```{r}
+dep.dia.cox.rand.shared <-
+  coxme(
+    dep_dia_object ~ baseMem + (1 + baseMem |
+                                  Study) ,
+    data = dz,
+    ties = c("breslow")
+  )
+dep.dia.cox.rand.shared
+```
+
+```{r}
+eat.dia.cox.rand.shared <-
+  coxme(
+    eat_dia_object ~ baseMem + (1 + baseMem |
+                                  Study) ,
+    data = dz,
+    ties = c("breslow")
+  )
+eat.dia.cox.rand.shared
+```
+
+```{r}
+anx.dia.cox.rand.shared <-
+  coxme(
+    anx_dia_object ~ baseMem + (1 + baseMem |
+                                  Study),
+    data = dz,
+    ties = c("breslow")
+  )
+anx.dia.cox.rand.shared
+```
+
+```{r}
+Stress.dia.cox.rand.shared <-
+  coxme(
+    Stress_dia_object ~ baseMem + (1 + baseMem |
+                                     Study),
+    data = dz,
+    ties = c("breslow")
+  )
+Stress.dia.cox.rand.shared
+```
+
+```{r}
+Bipolar.dia.cox.rand.shared <-
+  coxme(
+    Bipolar_dia_object ~ baseMem + (1 + baseMem |
+                                      Study.f),
+    data = dz,
+    ties = c("breslow")
+  )
+Bipolar.dia.cox.rand.shared
+```
+
+### IQ, age, sex covariates (where available)
+
+```{r}
+dia.cov.cox.rand.clustered <-
+  coxme(
+    dia.object ~ baseMem + (baseMem |
+                              Study.n) + Study + Baseline_IQ + Age + Sex,
+    data = dz,
+    ties = c("breslow")
+  )
+dia.cov.cox.rand.clustered
+```
+
+```{r}
+dep.cov.cox.rand.clustered <-
+  coxme(
+    dep_dia_object ~ baseMem + (baseMem |
+                              Study.n) + Study + Baseline_IQ + Age + Sex,
+    data = dz,
+    ties = c("breslow")
+  )
+dep.cov.cox.rand.clustered
+```
+
+```{r}
+eat.cov.cox.strata <-
+  coxph(
+    eat_dia_object ~ strata(Study.f) + baseMem + Age + Sex,
+    data = dz,
+    ties = c("breslow")
+  )
+eat.cov.cox.strata
+```
+
+## Moderator analysis
+
+```{r prepare dataset}
+d <- d%>% group_by(Study) %>%
+  mutate(nameDepSx = ifelse(Study == "Nixon_PTSD", "CDI_t", NA),
+         nameDepSx = ifelse(Study == "Woody", "CDI", nameDepSx)) %>%
+  ungroup()
+```
+
+CDI cutoff - Timbremont et al., 2004
+
+CDI t-score cutoff - +1SD above mean; e.g., Stazyk et al., 2017, Marwitz & Pringsheim, 2018
+
+sMFQ cutoff - Eyre et al., 2021
+
+MFQ cutoff - Daviss et al., 2006
+
+RCA cutoff - Chorpita et al., 2005
+
+```{r mutating relevant variables}
+d <-
+  d %>% mutate(
+    nameDepSx = ifelse(
+      Study %in% c(
+        "Askelund",
+        "Gutenbrunner",
+        "Hamlat",
+        "Hiller",
+        "Hitchcock",
+        "Hitchcock2",
+        "Nixon_ASD",
+        "Rice"
+      ),
+      Self_dep,
+      nameDepSx
+    ),
+    nameDepSx = ifelse(Study == "Warne", "sMFQ", nameDepSx)
+  )
+
+dep.scale.cut.off = c(
+  CDI = 16,
+  CDI_t = 65,
+  sMFQ = 12,
+  MFQ = 29,
+  RCA = 11
+)
+
+d <-
+  d %>% mutate(Baseline_dep_sx_cutoff = ifelse(baseDepSx >= dep.scale.cut.off[nameDepSx], 1, 0))
+
+dz$Baseline_dep_dia_sx <- d$Baseline_dep_sx_cutoff
+```
+
+### Age as a moderator of mem spec and dep sx
+
+```{r}
+dz <- dz %>% group_by(Study) %>% 
+  mutate(Age.mean = mean(Age, na.rm = T),
+         Age.cen = Age - Age.mean) %>% 
+  ungroup()
+
+#within study interaction term of base mem and Age
+dz$ws.age.int <- dz$baseMem*dz$Age.cen
+
+#across study interaction of base mem and Age
+dz$acr.age.int <- dz$baseMem*dz$Age.mean
+```
+
+```{r dep sx at multiple time points with mem:Age interaction}
+depSxmodel.Age.int   <-
+  lme(
+    depSx ~ baseMem + baseDepSx + ws.age.int + acr.age.int + Age.mean + Age.cen + timeDep,
+    data = dz,
+    random    = ~ 1 + acr.age.int + ws.age.int |
+      Study ,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+
+summary(depSxmodel.Age.int)
+```
+
+### Sex as a moderator of mem spec and dep sx
+
+```{r}
+dz$Sex <- as.numeric(dz$Gender)
+
+dz <- dz %>% group_by(Study) %>% 
+  mutate(Sex.mean = mean(Sex, na.rm = T),
+         Sex.cen = Sex - Sex.mean) %>% 
+  ungroup()
+
+dz$ws.sex.int <- dz$baseMem*dz$Sex.cen
+dz$acr.sex.int <- dz$baseMem*dz$Sex.mean
+```
+
+```{r dep sx at multiple time points with mem:sex interaction}
+depSxmodel.sex.int   <-
+  lme(
+    depSx ~ baseMem + baseDepSx +  ws.sex.int + acr.sex.int + Sex.cen + Sex.mean + timeDep,
+    data = dz,
+    random    = ~ 1 + acr.sex.int + ws.sex.int |
+      Study ,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+
+summary(depSxmodel.sex.int)
+```
+
+### Trauma history as a moderator
+
+```{r mean centering}
+dz <- dz %>% group_by(Study) %>% 
+  mutate(Trauma.mean = mean(Trauma_exposed, na.rm = T),
+         Trauma.cen = Trauma_exposed - Trauma.mean) %>% 
+  ungroup()
+
+dz$ws.trauma.int <- dz$baseMem* dz$Trauma.cen
+dz$acr.trauma.int <- dz$baseMem* dz$Trauma.mean
+```
+
+```{r dep sx at multiple time points with mem:trauma interaction}
+depSxmodel.trauma.int   <-
+  lme(
+    depSx ~ baseMem + baseDepSx + ws.trauma.int + acr.trauma.int + Trauma.mean + Trauma.cen + timeDep,
+    data = dz,
+    random    = ~ 1 + acr.trauma.int + ws.trauma.int |
+      Study ,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+
+summary(depSxmodel.trauma.int)
+```
+
+### Family history as a moderator
+
+```{r mean centering}
+dz <- dz %>% group_by(Study) %>% 
+  mutate(famHis.mean = mean(Family_mental_illness, na.rm = T),
+         famHis.cen = Family_mental_illness - famHis.mean) %>% 
+  ungroup()
+
+dz$ws.famHis.int <- dz$baseMem* dz$famHis.cen
+dz$acr.famHis.int <- dz$baseMem* dz$famHis.mean
+```
+
+```{r dep sx at multiple time points with mem:family history interaction}
+depSxmodel.famHis.int   <-
+  lme(
+    depSx ~ baseMem + baseDepSx + ws.famHis.int + acr.famHis.int + famHis.mean + famHis.cen +
+      timeDep,
+    data = dz,
+    random    = ~ 1 + acr.famHis.int + ws.famHis.int |
+      Study ,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+
+summary(depSxmodel.famHis.int)
+```
+
+### Baseline depression as a moderator
+
+```{r}
+dz <- dz %>% group_by(Study) %>% 
+  mutate(Dep.mean = mean(Baseline_dep_dia_sx, na.rm = T),
+         Dep.cen = Baseline_dep_dia_sx - Dep.mean) %>% 
+  ungroup()
+
+dz$ws.dep.int <- dz$baseMem*dz$Dep.cen
+dz$acr.dep.int <- dz$baseMem*dz$Dep.mean
+```
+
+```{r dep sx at multiple time points with mem:baseDep interaction}
+depSxmodel.dep.int   <-
+  lme(
+    depSx ~ baseMem + ws.dep.int + acr.dep.int + Dep.cen + Dep.mean + timeDep,
+    data = dz,
+    random    = ~ 1 + acr.dep.int + ws.dep.int |
+      Study ,
+    na.action = na.omit,
+    control   = lmeControl(opt = 'optim')
+  )
+
+summary(depSxmodel.dep.int)
+```
+
+## Additional checks
+
+### Multivariate model of depressive symptoms without participants that meets clinical cut-off at baseline
+
+```{r, warning=F}
+#Askelund 
+#depression sx 6m
+Ask.d6.sup1 <- single_ipd(dz%>% filter(Study == "Askelund" & Baseline_dep_dia_sx != 1), formula = "depSx6m ~baseMem + baseDepSx")
+#depression sx 12m
+Ask.d12.sup1 <- single_ipd(dz%>% filter(Study == "Askelund" & Baseline_dep_dia_sx != 1))
+
+A_dm_fitsur_sup1 <- systemfit(list(dep6m = A_dm1, dep12m = A_dm2), data = subset(dz, Study =="Askelund" & Baseline_dep_dia_sx != 1),
+                    method = "SUR")
+
+Ask_dm_V11_sup1 <- A_dm_fitsur_sup1$coefCov["dep6m_baseMem", "dep6m_baseMem"]
+Ask_dm_V12_sup1 <- A_dm_fitsur_sup1$coefCov["dep6m_baseMem", "dep12m_baseMem"]
+Ask_dm_V22_sup1 <- A_dm_fitsur_sup1$coefCov["dep12m_baseMem", "dep12m_baseMem"]
+
+#Rice
+#depression sx 12m
+Rice.d12.sup1 <- single_ipd(dz %>% filter(Study == "Rice" & Baseline_dep_dia_sx != 1))
+
+Rice_dm_V22_sup1 <- Rice.d12.sup1$SE**2
+```
+
+```{r}
+dep.mv.sup1 <- data.frame (
+  Study = c("Askelund et al. 2019", "Gutenbrunner et al. 2018", "Hamlat et al. 2015", "Hiller unpub.", "Hipwell et al. 2011", "Hitchcock et al. 2014", "Hitchcock unpub.", "McCrory et al. 2017", "Nixon et al 2013a", "Nixon et al 2013b", "Rawal & Rice 2012", "Warne et al. 2020", "Woody et al. 2022"),
+  n = c(930, 269, 397, 28, 236, 74, 195, 41, 65, 67, 259, 5880, 249),
+  dep6m = c(Ask.d6.sup1$coef, 0.0000, Ham.d6$coef, Hil.d6$coef, 0.0000, Hit.d6$coef, 0.0000, 0.0000, NixA.d6$coef, NixP.d6$coef, 0.0000, 0.0000,  Wood.d6$coef),
+  dep12m = c(Ask.d12.sup1$coef, Gut.d12$coef, Ham.d12$coef, 0.0000, Hip.d12$coef, 0.0000, Hit2.d12$coef, 0.0000, 0.0000, 0.0000, Rice.d12.sup1$coef, 0.0000, Wood.d12$coef),
+  dep18m = c(0.0000, 0.0000, Ham.d18$coef, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d18$coef),
+  dep24m = c(0.0000, Gut.d24$coef, Ham.d24$coef, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood.d24$coef),
+  dep48m = c(0.0000, 0.0000, Ham.d48$coef, 0.0000, 0.0000, 0.0000, 0.0000, Mc.d48$coef, 0.0000, 0.0000, 0.0000, Warn.d48$coef, 0.0000),
+  V11 = c(Ask_dm_V11_sup1, 100000, Ham_dm_V11, Hil_dm_V11, 100000, Hit_dm_V11, 100000, 100000, NixA_dm_V11, NixP_dm_V11, 100000, 100000, Wood_dm_V11),
+  V12 = c(Ask_dm_V12_sup1, 0.0000, Ham_dm_V12, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V12),
+  V13 = c(0.0000, 0.0000, Ham_dm_V13, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V13),
+  V14 = c(0.0000, 0.0000, Ham_dm_V14, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V14),
+  V15 = c(0.0000, 0.0000, Ham_dm_V15, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V22 = c(Ask_dm_V22_sup1, Gut_dm_V22, Ham_dm_V22, 100000, Hip_dm_V22, 100000, Hit2_dm_V22, 100000, 100000, 100000, Rice_dm_V22_sup1, 100000, Wood_dm_V22),
+  V23 = c(0.0000, 0.0000, Ham_dm_V23, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V23),
+  V24 = c(0.0000, Gut_dm_V24, Ham_dm_V24, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V24),
+  V25 = c(0.0000, 0.0000, Ham_dm_V25, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V33 = c(100000, 100000, Ham_dm_V33, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dm_V33),
+  V34 = c(0.0000, 0.0000, Ham_dm_V34, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Wood_dm_V34),
+  V35 = c(0.0000, 0.0000, Ham_dm_V35, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V44 = c(100000, Gut_dm_V44, Ham_dm_V44, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Wood_dm_V44),
+  V45 = c(0.0000, 0.0000, Ham_dm_V45, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V55 = c(100000, 100000, Ham_dm_V55, 100000, 100000, 100000, 100000, Mc_dm_V55, 100000, 100000, 100000, Warn_dm_V55, 100000))
+```
+
+```{r}
+y.sup1 <- as.matrix(dep.mv.sup1[3:7])
+S.sup1 <- as.matrix(dep.mv.sup1[8:22])
+model.dep.mv.sup1.1 <- mvmeta(y.sup1, S.sup1)
+summary(model.dep.mv.sup1.1)
+```
+
+### Multivariate model with all psychopathology symptoms at earliest timepoint per study
+
+```{r, warning=F}
+#stage one
+##Warne psychosis sx
+Warn.psy48 <-
+  single_ipd(dz %>% filter(Study == "Warne"), formula = "psySx48m ~ baseMem + basePsySx")
+
+#obtaining covariance between outcomes per study
+##Askelund
+Ask_all_V11 <- Ask.d12$SE**2
+
+#Gutenbrunner
+G_all1 <- depSx ~ baseMem + baseDepSx 
+G_all2 <- anxSx12m ~ baseMem + baseAnxSx 
+
+G_all_fitsur <-
+  systemfit(
+    list(dep = G_all1, anx = G_all2),
+    data = subset(dz, Study == "Gutenbrunner"),
+    method = "SUR"
+  )
+
+Gut_all_V11 <- G_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+Gut_all_V12 <- G_all_fitsur$coefCov["dep_baseMem", "anx_baseMem"]
+Gut_all_V22 <- G_all_fitsur$coefCov["anx_baseMem", "anx_baseMem"]
+
+#Hamlat
+Ham_all1 <- depSx ~ baseMem + baseDepSx 
+Ham_all2 <- anxSx6m ~ baseMem + baseAnxSx 
+
+Ham_all_fitsur <-
+  systemfit(
+    list(dep = Ham_all1, anx = Ham_all2),
+    data = subset(dz, Study == "Hamlat"),
+    method = "SUR"
+  )
+
+Ham_all_V11 <- Ham_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+Ham_all_V12 <- Ham_all_fitsur$coefCov["dep_baseMem", "anx_baseMem"]
+Ham_all_V22 <- Ham_all_fitsur$coefCov["anx_baseMem", "anx_baseMem"]
+
+#Hitchcock
+Hit.d2 <-
+  single_ipd(dz %>% filter(Study == "Hitchcock"), formula = "depSx ~baseMem + baseDepSx")
+
+Hit_all1 <- depSx ~ baseMem + baseDepSx
+Hit_all3 <- PTSDsx2m ~ baseMem + basePTSDsx 
+
+Hit_all_fitsur <-
+  systemfit(
+    list(dep = Hit_all1, ptsd = Hit_all3),
+    data = subset(dz, Study == "Hitchcock"),
+    method = "SUR"
+  )
+
+Hit_all_V11 <- Hit_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+Hit_all_V13 <- Hit_all_fitsur$coefCov["dep_baseMem", "ptsd_baseMem"]
+Hit_all_V33 <- Hit_all_fitsur$coefCov["ptsd_baseMem", "ptsd_baseMem"]
+
+#Hitchcock2
+Hit2_all1 <- depSx ~ baseMem + baseDepSx 
+Hit2_all2 <- anxSx12m ~ baseMem + baseAnxSx
+Hit2_all3 <- PTSDsx8m ~ baseMem + basePTSDsx
+
+Hit2_all_fitsur <-
+  systemfit(
+    list(dep = Hit2_all1, anx = Hit2_all2, ptsd = Hit2_all3),
+    data = subset(dz, Study == "Hitchcock2"),
+    method = "SUR"
+  )
+
+Hit2_all_V11 <- Hit2_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+Hit2_all_V12 <- Hit2_all_fitsur$coefCov["dep_baseMem", "anx_baseMem"]
+Hit2_all_V13 <- Hit2_all_fitsur$coefCov["dep_baseMem", "ptsd_baseMem"]
+Hit2_all_V22 <- Hit2_all_fitsur$coefCov["anx_baseMem", "anx_baseMem"]
+Hit2_all_V23 <- Hit2_all_fitsur$coefCov["anx_baseMem", "ptsd_baseMem"]
+Hit2_all_V33 <- Hit2_all_fitsur$coefCov["ptsd_baseMem", "ptsd_baseMem"]
+
+#Hiller 
+Hil_all_V11 <- Hil.d6$SE**2
+
+#Hipwell
+Hip_all_V11 <- Hip.d12$SE**2
+
+#McCrory
+Mc_all1 <- depSx ~ baseMem + baseDepSx
+Mc_all2 <- anxSx27m ~ baseMem + baseAnxSx
+
+Mc_all_fitsur <-
+  systemfit(
+    list(dep = Mc_all1, anx = Mc_all2),
+    data = subset(dz, Study == "McCrory"),
+    method = "SUR"
+  )
+
+Mc_all_V11 <- Mc_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+Mc_all_V12 <- Mc_all_fitsur$coefCov["dep_baseMem", "anx_baseMem"]
+Mc_all_V22 <- Mc_all_fitsur$coefCov["anx_baseMem", "anx_baseMem"]
+
+#NixonA
+NixA_all1 <- depSx ~ baseMem + baseDepSx
+NixA_all3 <- PTSDsx2m ~ baseMem + basePTSDsx
+
+NixA_all_fitsur <-
+  systemfit(
+    list(dep = NixA_all1, ptsd = NixA_all3),
+    data = subset(dz, Study == "Nixon_ASD"),
+    method = "SUR"
+  )
+
+NixA_all_V11 <- NixA_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+NixA_all_V13 <- NixA_all_fitsur$coefCov["dep_baseMem", "ptsd_baseMem"]
+NixA_all_V33 <- NixA_all_fitsur$coefCov["ptsd_baseMem", "ptsd_baseMem"]
+
+#NixonP
+NixP_all1 <- depSx ~ baseMem + baseDepSx
+NixP_all3 <- PTSDsx2m ~ baseMem + basePTSDsx
+
+NixP_all_fitsur <-
+  systemfit(
+    list(dep = NixP_all1, ptsd = NixP_all3),
+    data = subset(dz, Study == "Nixon_PTSD"),
+    method = "SUR"
+  )
+
+NixP_all_V11 <- NixP_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+NixP_all_V13 <- NixP_all_fitsur$coefCov["dep_baseMem", "ptsd_baseMem"]
+NixP_all_V33 <- NixP_all_fitsur$coefCov["ptsd_baseMem", "ptsd_baseMem"]
+
+#Rice
+Rice_all_V11 <- Rice.d12$SE**2
+
+#Warne
+Wa_all1 <- depSx ~ baseMem + baseDepSx
+Wa_all4 <- psySx48m ~ baseMem + basePsySx
+
+Wa_all_fitsur <-
+  systemfit(
+    list(dep = Wa_all1, psychosis = Wa_all4),
+    data = subset(dz, Study == "Warne"),
+    method = "SUR"
+  )
+
+Warn_all_V11 <- Wa_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+Warn_all_V14 <- Wa_all_fitsur$coefCov["dep_baseMem", "psychosis_baseMem"]
+Warn_all_V44 <- Wa_all_fitsur$coefCov["psychosis_baseMem", "psychosis_baseMem"]
+
+#Woody
+Wo_all1 <- depSx ~ baseMem + baseDepSx
+Wo_all2 <- anxSx6m ~ baseMem + baseAnxSx 
+
+Wo_all_fitsur <-
+  systemfit(
+    list(dep = Wo_all1, anx = Wo_all2),
+    data = subset(dz, Study == "Woody"),
+    method = "SUR"
+  )
+
+Wood_all_V11 <- Wo_all_fitsur$coefCov["dep_baseMem", "dep_baseMem"]
+Wood_all_V12 <- Wo_all_fitsur$coefCov["dep_baseMem", "anx_baseMem"]
+Wood_all_V22 <- Wo_all_fitsur$coefCov["anx_baseMem", "anx_baseMem"]
+```
+
+```{r}
+all.mv.sup2 <- data.frame (
+  Study = c("Askelund et al. 2019", "Gutenbrunner et al. 2018", "Hamlat et al. 2015", "Hiller unpub.", "Hipwell et al. 2011", "Hitchcock et al. 2014", "Hitchcock unpub.", "McCrory et al. 2017", "Nixon et al 2013a", "Nixon et al 2013b", "Rawal & Rice 2012", "Warne et al. 2020", "Woody et al. 2022"),
+  timeToFollowup = c(2, 12, 6, 6, 12, 2, 8, 27, 2, 2, 12, 48, 6),
+  dep = c(Ask.d6$coef, Gut.d12$coef, Ham.d6$coef, Hil.d6$coef, Hip.d12$coef, Hit.d2$coef, Hit2.d12$coef, Mc.d48$coef, NixA.d6$coef, NixP.d6$coef, Rice.d12$coef, Warn.d48$coef,  Wood.d6$coef),
+  anx = c(0.0000, Gut.a12$coef, Ham.a6$coef, 0.0000, 0.0000, 0.0000, Hit2.a12$coef, Mc.a27$coef, 0.0000, 0.0000, 0.0000, 0.0000, Wood.a6$coef), 
+  ptsd = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Hit.p2$coef, Hit2.p8$coef, 0.0000, NixA.p2$coef, NixP.p2$coef, 0.0000, 0.0000, 0.0000),
+  psychosis = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Warn.psy48$coef, 0.0000),
+  V11 = c(Ask_all_V11, Gut_all_V11, Ham_all_V11, Hil_all_V11, Hip_all_V11, Hit_all_V11, Hit2_all_V11, Mc_all_V11, NixA_all_V11, NixP_all_V11, Rice_all_V11, Warn_all_V11, Wood_all_V11),
+  V12 = c(0.0000, Gut_all_V12, Ham_all_V12, 0.0000, 0.0000, 0.0000, Hit2_all_V12, Mc_all_V12, 0.0000, 0.0000, 0.0000, 0.0000, Wood_all_V12),
+  V13 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Hit_all_V13, Hit2_all_V13, 0.0000, NixA_all_V13, NixP_all_V13, 0.0000, 0.0000, 0.0000),
+  V14 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Warn_all_V14),
+  V22 = c(100000, Gut_all_V22, Ham_all_V22, 100000, 100000, 100000, Hit2_all_V22, Mc_all_V22, 100000, 100000, 100000, 100000, Wood_all_V22),
+  V23 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, Hit2_all_V23, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V24 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V33 = c(100000, 100000, 100000, 100000, 100000, Hit_all_V33, Hit2_all_V33, 100000, NixA_all_V33, NixP_all_V33, 100000, 100000, 100000),
+  V34 = c(0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000),
+  V44 = c(100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, 100000, Warn_all_V44, 100000))
+```
+
+```{r}
+y.all <- as.matrix(all.mv.sup2[3:6])
+S.all <- as.matrix(all.mv.sup2[7:16])
+all.mv.sup2.1 <- mvmeta(y.all, S.all)
+summary(all.mv.sup2.1)
+```
+
+```{r}
+all_mv_yi <- all.mv.sup2 %>% pivot_longer(cols = dep:psychosis, values_to = "Yi", names_to = "Symptom")
+all_mv_V1i <- all.mv.sup2 %>% pivot_longer(cols = V11:V14, values_to = "V1i")
+all_mv_V2i <- all.mv.sup2 %>% pivot_longer(cols = c(V12, V22:V24), values_to = "V2i")
+all_mv_V3i <- all.mv.sup2 %>% pivot_longer(cols = c(V13, V23, V33, V34), values_to = "V3i")
+all_mv_V4i <- all.mv.sup2 %>% pivot_longer(cols = c(V14, V24, V34, V44), values_to = "V4i")
+
+all_mv_l <- cbind(all_mv_yi %>% select(Study, Symptom, Yi), all_mv_V1i %>% select(V1i), all_mv_V2i %>% select(V2i), all_mv_V3i%>% select(V3i), all_mv_V4i %>% select(V4i))
+```
+
+```{r, warning=F}
+#construct full (block-diagonal) variance covariance matrix for all studies
+V.all <- bldiag(lapply(split(all_mv_l[,c("V1i", "V2i", "V3i","V4i")], all_mv_l$Study), as.matrix))
+
+all.mv.sup2.2 <- rma.mv(Yi, V.all, mods = ~Symptom - 1, random = ~ Symptom|Study, 
+              struct="UN", data=all_mv_l, method="REML")
+print(all.mv.sup2.2, digits=3)
+```
+
+### Use clinical cut-off on depressive sx to apply Cox models
+
+```{r, warning=F}
+# look for columns that have _self_dep (for self-report of dep sx)
+dep.sx.columns = grep("_self_dep", colnames(d), value = T)
+# check if column starts with Base to set time=0, otherwise extract time in months from end of column name
+dep.sx.columns.time = ifelse(grepl("^Base", dep.sx.columns), 0, as.numeric(gsub(
+  ".*_dep_", "", gsub("m$", "", dep.sx.columns)
+)))
+
+d = as.data.frame(d)
+d$above.cutoff.time = NA
+d$above.cutoff = NA
+
+for(i in 1:length(dep.sx.columns)){
+  column = dep.sx.columns[i]
+  time = dep.sx.columns.time[i]
+  above.cutoff.rows = which(d[,column] >= dep.scale.cut.off[d$nameDepSx]) 
+  below.cutoff.rows = which(d[,column] < dep.scale.cut.off[d$nameDepSx])
+  still.below.cutoff.rows = intersect(below.cutoff.rows, which(d[,'above.cutoff']==0))
+  newly.below.cutoff.rows = intersect(below.cutoff.rows, which(is.na(d[,'above.cutoff'])))
+  already.above.cutoff.rows = intersect(above.cutoff.rows, which(d[,'above.cutoff']==1))
+  newly.above.cutoff.rows = setdiff(above.cutoff.rows, which(d[,'above.cutoff']==1))
+  
+  d[above.cutoff.rows,'above.cutoff'] = 1
+  d[below.cutoff.rows,'above.cutoff'] = ifelse(is.na(d[below.cutoff.rows,'above.cutoff']), 0,
+                                          pmax(d[below.cutoff.rows,'above.cutoff'],0)) 
+  # pmax (parallel maximum) sets to 0 if already 0 and 1 if already diagnosed
+  
+  
+  if(length(already.above.cutoff.rows)>0){
+     d[already.above.cutoff.rows,'above.cutoff.time'] = pmin(d[already.above.cutoff.rows,'above.cutoff.time'], time,na.rm=T)
+  }
+  if(length(newly.above.cutoff.rows)>0){
+    d[newly.above.cutoff.rows,'above.cutoff.time'] = time
+  }
+ 
+  if(length(still.below.cutoff.rows)>0){
+    d[still.below.cutoff.rows,'above.cutoff.time'] = pmax(d[still.below.cutoff.rows,'above.cutoff.time'], time,na.rm=T)
+  }
+  if(length(newly.below.cutoff.rows)>0){
+    d[newly.below.cutoff.rows,'above.cutoff.time'] = time
+  }
+  
+}
+
+#manually check
+#d[,c("nameDepSx", "above.cutoff", "above.cutoff.time", dep.sx.columns[order(dep.sx.columns.time)])] %>% View()
+```
+
+```{r}
+dep.sx.object <- Surv(d$above.cutoff.time, d$above.cutoff)
+
+dep.sx.cox.rand.clustered <- coxme(
+  dep.sx.object ~ baseMem + (baseMem |
+                               Study) + Study,
+  data = dz,
+  ties = c("breslow")
+)
+
+dep.sx.cox.rand.clustered
+exp(confint(dep.sx.cox.rand.clustered))
+```
+
+Is there more discrepancy between clinician-rated and self-report in people with low memory specificity compared to people with high memory specificity?
+
+#### At baseline
+
+```{r}
+dz = dz %>% mutate(
+  Baseline_dep_dia_int = case_when(
+    is.na(Depressive_disorders_time) ~ NA,
+    Depressive_disorders_diagnosed == 1 &
+      Depressive_disorders_time == 0 ~ 1,
+    .default = 0
+  )
+)
+```
+
+```{r,warning=F}
+p = dz %>%
+  group_by(memCat) %>%
+  mutate(weight = 1 / sum(!is.na(Baseline_dep_dia_int) &
+                            !is.na(Baseline_dep_dia_sx))) %>%
+  ggplot(aes(abs(
+    Baseline_dep_dia_int - Baseline_dep_dia_sx
+  ))) +
+  facet_wrap( ~ memCat) +
+  geom_histogram(
+    aes(weight = weight),
+    bins = 2,
+    binwidth = 0.3,
+    alpha = 0.7
+  ) +
+  xlab("Self-report and Clinician-rated Discrepancy") +
+  ylab("Proportion") +
+  theme_bw()
+print(p)
+```
+
+```{r}
+diff.table.baseline = table(dz$memCat,
+                            abs(dz$Baseline_dep_dia_int - dz$Baseline_dep_dia_sx))
+
+fisher.test(diff.table.baseline)
+```
+
+#### At 12m follow-up
+
+```{r, warning=F}
+d = d %>% 
+  mutate(Dep_dia_sx_12m = ifelse(Followup_self_dep_12m >= dep.scale.cut.off[nameDepSx], 1, 0))
+
+dz$Dep_dia_sx_12m = d$Dep_dia_sx_12m
+
+p.12m = dz %>%
+  group_by(memCat) %>%
+  mutate(weight = 1 / sum(!is.na(Dep_dia_sx_12m) &
+                            !is.na(Followup_int_dep_dia_12m))) %>%
+  ggplot(aes(abs(
+    Dep_dia_sx_12m - Followup_int_dep_dia_12m
+  ))) +
+  facet_wrap( ~ memCat) +
+  geom_histogram(
+    aes(weight = weight),
+    bins = 2,
+    binwidth = 0.3,
+    alpha = 0.7
+  ) +
+  xlab("Self-report and Clinician-rated Discrepancy") +
+  ylab("Proportion") +
+  theme_bw()
+
+print(p.12m)
+
+diff.table.12m = table(dz$memCat,
+                             abs(dz$Dep_dia_sx_12m - dz$Followup_int_dep_dia_12m))
+
+fisher.test(diff.table.12m)
+```
+
+# References
+
+Chorpita, B. F., Moffitt, C. E., & Gray, J. (2005). Psychometric properties of the Revised Child Anxiety and Depression Scale in a clinical sample. *Behaviour research and therapy*, *43*(3), 309-322.
+
+Daviss, W. B., Birmaher, B., Melhem, N. A., Axelson, D. A., Michaels, S. M., & Brent, D. A. (2006). Criterion validity of the Mood and Feelings Questionnaire for depressive episodes in clinic and non‐clinic subjects. *Journal of Child Psychology and Psychiatry*, *47*(9), 927-934.
+
+Eyre, O., Jones, R. B., Agha, S. S., Wootton, R. E., Thapar, A. K., Stergiakouli, E., Langley, K., Collishaw, S., Thapar, A., & Riglin, L. (2021). Validation of the short Mood and Feelings Questionnaire in young adulthood. *Journal of Affective Disorders*, *294*, 883-888.
+
+Marwitz, L., & Pringsheim, T. (2018). Clinical utility of screening for anxiety and depression in children with Tourette syndrome. *Journal of the Canadian Academy of Child and Adolescent Psychiatry*, *27*(1), 15.
+
+Riley, R. D., Tierney, J. F., & Stewart, L. A. (2021). *Individual participant data meta-analysis: a handbook for healthcare research*. John Wiley & Sons.
+
+Stazyk, K., DeMatteo, C., Moll, S., & Missiuna, C. (2017). Depression in youth recovering from concussion: correlates and predictors. *Brain injury*, *31*(5), 631-638.
+
+Timbremont, B., Braet, C., & Dreessen, L. (2004). Assessing depression in youth: relation between the Children's Depression Inventory and a structured interview. *Journal of Clinical Child and Adolescent Psychology*, *33*(1), 149-157.
